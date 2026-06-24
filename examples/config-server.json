@@ -1,0 +1,38 @@
+{
+  "log": {
+    "level": "info"
+  },
+  "inbounds": [
+    {
+      "type": "hysteria2",
+      "tag": "hy2-in",
+      "listen": "0.0.0.0",
+      "listen_port": 443,
+      "users": [
+        {
+          "name": "user1",
+          "password": "your-strong-password"
+        }
+      ],
+      "tls": {
+        "enabled": true,
+        "server_name": "example.com",
+        "certificate_path": "/path/to/cert.pem",
+        "key_path": "/path/to/key.pem"
+      },
+      "obfs": {
+        "type": "salamander",
+        "password": "obfs-password"
+      }
+    }
+  ],
+  "outbounds": [
+    {
+      "type": "direct",
+      "tag": "direct"
+    }
+  ],
+  "route": {
+    "final": "direct"
+  }
+}

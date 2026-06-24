@@ -1,0 +1,62 @@
+{
+  "log": {
+    "level": "info"
+  },
+  "dns": {
+    "servers": [
+      {
+        "tag": "google",
+        "address": "https://dns.google/dns-query"
+      }
+    ],
+    "final": "google"
+  },
+  "inbounds": [
+    {
+      "type": "mixed",
+      "tag": "mixed-in",
+      "listen": "127.0.0.1",
+      "listen_port": 7890
+    }
+  ],
+  "outbounds": [
+    {
+      "type": "vless",
+      "tag": "reality",
+      "server": "example.com",
+      "server_port": 443,
+      "uuid": "00000000-0000-0000-0000-000000000001",
+      "flow": "xtls-rprx-vision",
+      "tls": {
+        "enabled": true,
+        "server_name": "www.microsoft.com",
+        "utls": {
+          "enabled": true,
+          "fingerprint": "chrome"
+        },
+        "reality": {
+          "enabled": true,
+          "public_key": "SLwTPtHr3fQPJyCa0bHQY2KRcp5Z5TxXzxY3ZCDHCmE",
+          "short_id": "6ba85179e30d4fc2"
+        }
+      }
+    },
+    {
+      "type": "direct",
+      "tag": "direct"
+    },
+    {
+      "type": "block",
+      "tag": "block"
+    }
+  ],
+  "route": {
+    "rules": [
+      {
+        "geoip": ["private"],
+        "outbound": "direct"
+      }
+    ],
+    "final": "reality"
+  }
+}

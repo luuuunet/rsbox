@@ -1,0 +1,79 @@
+syntax = "proto3";
+package rsbox.api;
+
+service ExperimentalService {
+  rpc GetVersion(Empty) returns (Version);
+  rpc GetConnections(Empty) returns (ConnectionList);
+  rpc CloseConnection(CloseConnectionRequest) returns (Empty);
+  rpc CloseAllConnections(Empty) returns (Empty);
+  rpc GetStats(Empty) returns (Stats);
+}
+
+service GroupService {
+  rpc List(Empty) returns (OutboundList);
+  rpc Select(SelectRequest) returns (Empty);
+  rpc UrlTest(UrlTestRequest) returns (UrlTestResult);
+}
+
+service OutboundService {
+  rpc List(Empty) returns (OutboundList);
+}
+
+message Empty {}
+
+message Version {
+  string version = 1;
+  bool experimental = 2;
+}
+
+message OutboundList {
+  repeated Outbound outbounds = 1;
+}
+
+message Outbound {
+  string tag = 1;
+  string type = 2;
+}
+
+message SelectRequest {
+  string group_tag = 1;
+  string outbound_tag = 2;
+}
+
+message UrlTestRequest {
+  string group_tag = 1;
+}
+
+message UrlTestResult {
+  string selected = 1;
+  repeated OutboundDelay delays = 2;
+}
+
+message OutboundDelay {
+  string tag = 1;
+  uint32 delay_ms = 2;
+}
+
+message ConnectionList {
+  repeated Connection connections = 1;
+}
+
+message Connection {
+  uint64 id = 1;
+  string inbound = 2;
+  string outbound = 3;
+  string network = 4;
+  string source = 5;
+  string destination = 6;
+  string domain = 7;
+  uint64 started_at = 8;
+}
+
+message CloseConnectionRequest {
+  uint64 id = 1;
+}
+
+message Stats {
+  uint64 connections = 1;
+  uint64 outbounds = 2;
+}

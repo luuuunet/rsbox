@@ -1,0 +1,44 @@
+# Rustfmt configuration for rsbox
+
+edition = "2021"
+max_width = 100
+hard_tabs = false
+tab_spaces = 4
+newline_style = "Unix"
+use_small_heuristics = "Default"
+
+# Imports
+reorder_imports = true
+reorder_modules = true
+imports_granularity = "Crate"
+group_imports = "StdExternalCrate"
+
+# Code style
+remove_nested_parens = true
+use_field_init_shorthand = true
+use_try_shorthand = true
+force_explicit_abi = true
+
+# Strings and formatting
+format_strings = false  # 保持稳定版兼容
+overflow_delimited_expr = true
+
+# Comments
+normalize_comments = false  # 保持稳定版兼容
+wrap_comments = false       # 保持稳定版兼容
+comment_width = 100
+
+# Functions
+fn_params_layout = "Tall"
+brace_style = "SameLineWhere"
+
+# Control flow
+control_brace_style = "AlwaysSameLine"
+match_arm_blocks = true
+match_block_trailing_comma = true
+
+# Misc
+trailing_comma = "Vertical"
+trailing_semicolon = true
+blank_lines_upper_bound = 2
+blank_lines_lower_bound = 0

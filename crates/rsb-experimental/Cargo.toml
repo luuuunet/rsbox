@@ -1,0 +1,16 @@
+[package]
+name = "rsb-experimental"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+axum.workspace = true
+rsb-config.workspace = true
+rsb-core.workspace = true
+rsb-protocol.workspace = true
+serde = { workspace = true, features = ["derive"] }
+serde_json.workspace = true
+tokio.workspace = true
+tracing.workspace = true

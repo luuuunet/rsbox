@@ -1,0 +1,28 @@
+[package]
+name = "rsb-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+async-trait.workspace = true
+dashmap.workspace = true
+if-addrs = "0.14"
+rsb-config.workspace = true
+rsb-constant.workspace = true
+serde_json.workspace = true
+socket2 = { version = "0.6", features = ["all"] }
+tokio.workspace = true
+tracing.workspace = true
+
+[target.'cfg(unix)'.dependencies]
+libc.workspace = true
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { workspace = true, features = [
+    "Win32_Foundation",
+    "Win32_NetworkManagement_IpHelper",
+    "Win32_Networking_WinSock",
+    "Win32_System_Threading",
+] }

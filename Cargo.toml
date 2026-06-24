@@ -1,0 +1,116 @@
+[workspace]
+resolver = "2"
+members = [
+    "crates/rsb-constant",
+    "crates/rsb-config",
+    "crates/rsb-core",
+    "crates/rsb-protocol",
+    "crates/rsb-route",
+    "crates/rsb-dns",
+    "crates/rsb-experimental",
+    "crates/rsb-libbox",
+    "crates/rsb-wireguard",
+    "rsbox",
+]
+
+[workspace.package]
+edition = "2021"
+license = "GPL-3.0-or-later"
+version = "0.1.0"
+authors = ["rsbox contributors"]
+repository = "https://github.com/yourusername/rsbox"
+homepage = "https://github.com/yourusername/rsbox"
+documentation = "https://docs.rs/rsbox"
+keywords = ["proxy", "sing-box", "network", "vless", "shadowsocks"]
+categories = ["network-programming", "command-line-utilities"]
+rust-version = "1.93"
+
+[workspace.dependencies]
+anyhow = "1"
+async-trait = "0.1"
+bytes = "1"
+clap = { version = "4", features = ["derive"] }
+dashmap = "6"
+h3 = "0.0.8"
+h3-quinn = "0.0.10"
+http = "1"
+http-body-util = "0.1"
+quinn = "0.11"
+rand = "0.9"
+rustls = { version = "0.23", default-features = false, features = ["ring", "std", "tls12"] }
+rustls-pemfile = "2"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+uuid = { version = "1", features = ["v4"] }
+aes-gcm = "0.10"
+chacha20poly1305 = "0.10"
+sha2 = "0.10"
+hmac = "0.12"
+base64 = "0.22"
+tokio-rustls = "0.26"
+webpki-roots = "0.26"
+shadowsocks = "1.23"
+parking_lot = "0.12"
+reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }
+tun = { version = "0.8", features = ["async"] }
+thiserror = "2"
+tokio = { version = "1", features = ["full"] }
+tokio-util = { version = "0.7", features = ["io"] }
+tracing = "0.1"
+tracing-subscriber = { version = "0.3", features = ["env-filter"] }
+blake2 = "0.10"
+blake3 = "1"
+ipstack = "1.0.0"
+libc = "0.2"
+boringtun = "0.6"
+ssh2 = { version = "0.9", default-features = false }
+x25519-dalek = { version = "=2.0.0-rc.3", features = ["static_secrets"] }
+windows-sys = { version = "0.59", features = ["Win32_NetworkManagement_IpHelper", "Win32_Networking_WinSock"] }
+axum = "0.8"
+axum-server = { version = "0.7", features = ["tls-rustls"] }
+futures-util = "0.3"
+tokio-tungstenite = { version = "0.24", features = ["rustls-tls-webpki-roots"] }
+serde_yaml = "0.9"
+tonic = { version = "0.12", features = ["transport"] }
+prost = "0.13"
+prost-types = "0.13"
+hkdf = "0.12"
+protox = "0.7"
+protoc-bin-vendored = "3"
+rcgen = "0.13"
+tonic-build = "0.12"
+
+regex = "1"
+rsb-constant = { path = "crates/rsb-constant" }
+rsb-config = { path = "crates/rsb-config" }
+rsb-core = { path = "crates/rsb-core" }
+rsb-protocol = { path = "crates/rsb-protocol" }
+rsb-route = { path = "crates/rsb-route" }
+rsb-dns = { path = "crates/rsb-dns" }
+rsb-experimental = { path = "crates/rsb-experimental" }
+rsb-wireguard = { path = "crates/rsb-wireguard" }
+rsb-libbox = { path = "crates/rsb-libbox" }
+
+[profile.release]
+lto = "fat"
+codegen-units = 1
+strip = true
+opt-level = "z"
+panic = "abort"
+
+[profile.dev]
+opt-level = 0
+debug = true
+split-debuginfo = "unpacked"
+
+[profile.dist]
+inherits = "release"
+lto = "fat"
+codegen-units = 1
+strip = true
+opt-level = 3
+
+[profile.release-with-debug]
+inherits = "release"
+debug = true
+strip = false

@@ -1,0 +1,32 @@
+{
+  "log": {
+    "level": "info"
+  },
+  "inbounds": [
+    {
+      "type": "mixed",
+      "tag": "mixed-in",
+      "listen": "127.0.0.1",
+      "listen_port": 7890
+    }
+  ],
+  "outbounds": [
+    {
+      "type": "shadowsocks",
+      "tag": "ss-out",
+      "server": "example.com",
+      "server_port": 8388,
+      "method": "chacha20-ietf-poly1305",
+      "password": "your-password-here",
+      "plugin": "",
+      "plugin_opts": ""
+    },
+    {
+      "type": "direct",
+      "tag": "direct"
+    }
+  ],
+  "route": {
+    "final": "ss-out"
+  }
+}

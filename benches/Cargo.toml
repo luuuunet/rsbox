@@ -1,0 +1,20 @@
+[package]
+name = "rsbox-benchmarks"
+version = "0.1.0"
+edition = "2021"
+publish = false
+
+[dependencies]
+rsb-config = { path = "../crates/rsb-config" }
+rsb-dns = { path = "../crates/rsb-dns" }
+rsb-route = { path = "../crates/rsb-route" }
+criterion = { version = "0.5", features = ["html_reports"] }
+tokio = { version = "1", features = ["rt", "macros"] }
+
+[[bench]]
+name = "dns_resolver"
+harness = false
+
+[[bench]]
+name = "router_matching"
+harness = false

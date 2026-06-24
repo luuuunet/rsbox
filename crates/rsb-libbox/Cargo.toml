@@ -1,0 +1,18 @@
+[package]
+name = "rsb-libbox"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lib]
+crate-type = ["cdylib", "rlib"]
+
+[dependencies]
+anyhow.workspace = true
+rsb-config.workspace = true
+rsb-constant.workspace = true
+rsb-protocol.workspace = true
+rsb-experimental.workspace = true
+tokio.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true

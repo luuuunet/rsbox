@@ -1,0 +1,84 @@
+version: '3.8'
+
+services:
+  # Basic proxy mode
+  rsbox:
+    image: ghcr.io/yourusername/rsbox:latest
+    container_name: rsbox
+    restart: unless-stopped
+    volumes:
+      - ./config.json:/etc/rsbox/config.json:ro
+      - rsbox-data:/var/lib/rsbox
+      - rsbox-logs:/var/log/rsbox
+    ports:
+      - "7890:7890"   # Mixed proxy port
+      - "9090:9090"   # API port
+    environment:
+      - RUST_LOG=info
+    networks:
+      - rsbox-network
+    healthcheck:
+      test: ["CMD", "rsbox", "version"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 5s
+
+  # TUN mode (requires privileged)
+  rsbox-tun:
+    image: ghcr.io/yourusername/rsbox:latest
+    container_name: rsbox-tun
+    restart: unless-stopped
+    privileged: true
+    cap_add:
+      - NET_ADMIN
+    devices:
+      - /dev/net/tun:/dev/net/tun
+    sysctls:
+      - net.ipv4.ip_forward=1
+      - net.ipv6.conf.all.forwarding=1
+      - net.ipv4.conf.all.rp_filter=0
+    volumes:
+      - ./config-tun.json:/etc/rsbox/config.json:ro
+      - rsbox-tun-data:/var/lib/rsbox
+    network_mode: host
+    environment:
+      - RUST_LOG=info
+    profiles:
+      - tun
+
+  # Server mode (Hysteria2 example)
+  rsbox-server:
+    image: ghcr.io/yourusername/rsbox:latest
+    container_name: rsbox-server
+    restart: unless-stopped
+    volumes:
+      - ./config-server.json:/etc/rsbox/config.json:ro
+      - ./certs:/etc/rsbox/certs:ro
+      - rsbox-server-data:/var/lib/rsbox
+    ports:
+      - "443:443/udp"  # Hysteria2 port
+      - "443:443/tcp"  # Fallback
+    environment:
+      - RUST_LOG=info
+    networks:
+      - rsbox-network
+    profiles:
+      - server
+
+volumes:
+  rsbox-data:
+    driver: local
+  rsbox-logs:
+    driver: local
+  rsbox-tun-data:
+    driver: local
+  rsbox-server-data:
+    driver: local
+
+networks:
+  rsbox-network:
+    driver: bridge
+    ipam:
+      config:
+        - subnet: 172.20.0.0/16

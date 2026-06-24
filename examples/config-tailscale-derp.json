@@ -1,0 +1,32 @@
+{
+  "log": {
+    "level": "debug"
+  },
+  "endpoints": [
+    {
+      "type": "tailscale",
+      "tag": "ts",
+      "auth_key": "tskey-auth-xxxxx",
+      "control_url": "https://controlplane.tailscale.com",
+      "state_file": "tailscale.state"
+    }
+  ],
+  "services": [
+    {
+      "type": "derp",
+      "listen": "0.0.0.0",
+      "listen_port": 443,
+      "hostname": "derp.example.com",
+      "config_path": "derper.key",
+      "tls": {
+        "enabled": true,
+        "certificate_path": "/path/to/cert.pem",
+        "key_path": "/path/to/key.pem"
+      },
+      "stun": {
+        "enabled": true,
+        "listen_port": 3478
+      }
+    }
+  ]
+}

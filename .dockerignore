@@ -1,0 +1,55 @@
+# .dockerignore for rsbox
+
+# Git
+.git/
+.gitignore
+.github/
+
+# Build artifacts
+target/
+**/*.rs.bk
+*.pdb
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+
+# Documentation
+*.md
+!README.md
+docs/
+examples/
+
+# CI/CD
+.github/
+
+# Config files
+config.json
+*.key
+*.pem
+*.crt
+
+# Runtime
+data/
+logs/
+*.log
+cache.db
+*.state
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Test files
+tests/
+
+# Scripts
+scripts/
+
+# Docker
+Dockerfile*
+docker-compose*.yml
+.dockerignore
