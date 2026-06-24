@@ -1,0 +1,118 @@
+name: Release
+
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+
+jobs:
+  build:
+    name: Build (${{ matrix.asset_name }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            artifact_name: rsbox
+            asset_name: rsbox-linux-x86_64
+            use_cross: false
+
+          - os: ubuntu-latest
+            target: aarch64-unknown-linux-gnu
+            artifact_name: rsbox
+            asset_name: rsbox-linux-aarch64
+            use_cross: true
+
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            artifact_name: rsbox.exe
+            asset_name: rsbox-windows-x86_64.exe
+            use_cross: false
+
+          - os: macos-latest
+            target: x86_64-apple-darwin
+            artifact_name: rsbox
+            asset_name: rsbox-macos-x86_64
+            use_cross: false
+
+          - os: macos-latest
+            target: aarch64-apple-darwin
+            artifact_name: rsbox
+            asset_name: rsbox-macos-aarch64
+            use_cross: false
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Install cross (Linux ARM)
+        if: matrix.use_cross
+        run: cargo install cross --locked
+
+      - name: Cache cargo
+        uses: actions/cache@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            target
+          key: release-${{ matrix.target }}-${{ hashFiles('**/Cargo.lock') }}
+          restore-keys: release-${{ matrix.target }}-
+
+      - name: Build release binary
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ "${{ matrix.use_cross }}" = "true" ]; then
+            cross build --release --target "${{ matrix.target }}" -p rsbox
+          else
+            cargo build --release --target "${{ matrix.target }}" -p rsbox
+          fi
+
+      - name: Strip binary (Unix)
+        if: runner.os != 'Windows'
+        run: strip "target/${{ matrix.target }}/release/${{ matrix.artifact_name }}"
+
+      - name: Prepare release asset
+        shell: bash
+        run: |
+          mkdir -p dist
+          cp "target/${{ matrix.target }}/release/${{ matrix.artifact_name }}" "dist/${{ matrix.asset_name }}"
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.asset_name }}
+          path: dist/${{ matrix.asset_name }}
+          if-no-files-found: error
+
+  release:
+    name: Publish GitHub Release
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: List release assets
+        run: find dist -type f -exec ls -lh {} \;
+
+      - name: Create GitHub Release
+        uses: softprops/action-gh-release@v2
+        with:
+          generate_release_notes: true
+          files: dist/**/*
