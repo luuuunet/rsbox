@@ -185,7 +185,15 @@ fn build_vmess_header(
     req.push(0); // pfs
     let padding_len = (rand::random::<u8>() % 16) as usize;
     req.push(padding_len as u8);
-    req.push(1); // security type auto
+    // Security type
+    let security_type = match self.security.as_str() {
+        "aes-128-gcm" => 3,
+        "chacha20-poly1305" => 4,
+        "none" => 5,
+        "zero" => 0,
+        _ => 1, // auto
+    };
+    req.push(security_type);
     req.push(0); // reserved
     req.push(command);
     req.extend_from_slice(&dest.port().to_be_bytes());
