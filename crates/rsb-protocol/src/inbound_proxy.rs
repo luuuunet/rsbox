@@ -276,19 +276,22 @@ async fn dial_and_relay(
     mut domain: Option<String>,
 ) -> Result<()> {
     let process = rsb_core::lookup_process_for_tcp_stream(client);
-    let sniff = crate::sniff::peek_sniff_tcp(client)
-        .await
-        .unwrap_or_default();
-    if domain.is_none() {
-        domain = sniff.domain;
-    }
+    // 禁用流量嗅探以提高 HTTPS 兼容性
+    // CONNECT 隧道应该是完全透明的，不应该 peek 客户端数据
+    // 这可以解决 Google/YouTube 等大型网站的 TLS 握手被检测的问题
+    // let sniff = crate::sniff::peek_sniff_tcp(client)
+    //     .await
+    //     .unwrap_or_default();
+    // if domain.is_none() {
+    //     domain = sniff.domain;
+    // }
     let dest = resolve_destination(&dns, dest, domain.as_deref()).await?;
     let metadata = Metadata {
         network: Network::Tcp,
         source: Some(peer),
         destination: Some(dest),
         domain,
-        protocol: sniff.protocol,
+        protocol: Some("https".to_string()),  // CONNECT 用于 HTTPS
         process_name: process.name,
         process_path: process.path,
         inbound_tag: inbound_tag.to_string(),
