@@ -166,12 +166,12 @@ fn build_tuic_header(cmd: u8, uuid: Uuid, password: &str, dest: SocketAddr) -> V
             buf.push(0x01);
             buf.extend_from_slice(&v4.ip().octets());
             buf.extend_from_slice(&v4.port().to_be_bytes());
-        }
+        },
         SocketAddr::V6(v6) => {
             buf.push(0x03);
             buf.extend_from_slice(&v6.ip().octets());
             buf.extend_from_slice(&v6.port().to_be_bytes());
-        }
+        },
     }
     buf
 }
@@ -408,7 +408,7 @@ async fn handle_tuic_stream(
             let ip = std::net::Ipv4Addr::new(cursor[0], cursor[1], cursor[2], cursor[3]);
             let port = u16::from_be_bytes([cursor[4], cursor[5]]);
             SocketAddr::from((ip, port))
-        }
+        },
         0x03 => {
             if cursor.len() < 18 {
                 anyhow::bail!("truncated ipv6");
@@ -416,7 +416,7 @@ async fn handle_tuic_stream(
             let ip = std::net::Ipv6Addr::from(<[u8; 16]>::try_from(&cursor[..16]).unwrap());
             let port = u16::from_be_bytes([cursor[16], cursor[17]]);
             SocketAddr::from((ip, port))
-        }
+        },
         _ => anyhow::bail!("unsupported tuic address type {atyp}"),
     };
     send.write_all(&[0]).await?;

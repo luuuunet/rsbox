@@ -1,8 +1,8 @@
 use anyhow::Context;
 use clap::{Parser, Subcommand};
+use rsb_api::{CacheFileService, ClashApiServer, V2RayApiServer};
 use rsb_config::Options;
 use rsb_constant::VERSION;
-use rsb_api::{CacheFileService, ClashApiServer, V2RayApiServer};
 use rsb_protocol::RsBox;
 use tracing_subscriber::EnvFilter;
 
@@ -35,7 +35,7 @@ async fn main() -> anyhow::Result<()> {
         Commands::Version => {
             println!("rsbox {VERSION} (sing-box compatible, Rust)");
             Ok(())
-        }
+        },
     }
 }
 

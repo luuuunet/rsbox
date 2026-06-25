@@ -186,7 +186,7 @@ async fn update_server(
         return Err(StatusCode::UNAUTHORIZED);
     }
     let mut servers = state.servers.lock().unwrap();
-    if !servers.get(&path).is_some() {
+    if servers.get(&path).is_none() {
         return Err(StatusCode::NOT_FOUND);
     }
     servers.as_object_mut().unwrap().insert(path.clone(), body);

@@ -22,17 +22,17 @@ pub fn build_service(
         TYPE_SERVICE_OCM => ServiceInner::Ocm(MultiplexerService::ocm(tag.clone(), raw)?),
         TYPE_SERVICE_RESOLVED => {
             ServiceInner::Resolved(ResolvedService::new(tag.clone(), raw, ctx)?)
-        }
+        },
         TYPE_SERVICE_SSM_API => ServiceInner::SsmApi(SsmApiService::new(tag.clone(), raw, ctx)?),
         TYPE_SERVICE_HYSTERIA_REALM => {
             ServiceInner::HysteriaRealm(HysteriaRealmService::new(tag.clone(), raw)?)
-        }
+        },
         TYPE_SERVICE_USBIP_SERVER => {
             ServiceInner::UsbipServer(UsbipServerService::new(tag.clone(), raw)?)
-        }
+        },
         TYPE_SERVICE_USBIP_CLIENT => {
             ServiceInner::UsbipClient(UsbipClientService::new(tag.clone(), raw)?)
-        }
+        },
         _ => ServiceInner::Generic(GenericService::new(tag.clone(), kind.clone())),
     };
     Ok(ServiceHandle::from_inner(tag, kind, inner))

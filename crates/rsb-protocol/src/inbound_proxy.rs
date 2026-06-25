@@ -122,17 +122,17 @@ async fn handle_client(
     match mode {
         ProxyMode::Http => {
             handle_http_connect(stream, peer, inbound_tag, inbound_type, dialer, dns).await
-        }
+        },
         ProxyMode::Socks => {
             handle_socks5(stream, peer, inbound_tag, inbound_type, dialer, dns).await
-        }
+        },
         ProxyMode::Mixed => {
             if peek[0] == 0x05 {
                 handle_socks5(stream, peer, inbound_tag, inbound_type, dialer, dns).await
             } else {
                 handle_http_connect(stream, peer, inbound_tag, inbound_type, dialer, dns).await
             }
-        }
+        },
     }
 }
 
@@ -179,7 +179,7 @@ async fn read_socks_addr(stream: &mut TcpStream, atyp: u8) -> Result<(SocketAddr
             let ip: [u8; 4] = buf[..4].try_into()?;
             let port = u16::from_be_bytes([buf[4], buf[5]]);
             Ok((SocketAddr::from((std::net::Ipv4Addr::from(ip), port)), None))
-        }
+        },
         0x03 => {
             let mut len = [0u8; 1];
             stream.read_exact(&mut len).await?;
@@ -188,7 +188,7 @@ async fn read_socks_addr(stream: &mut TcpStream, atyp: u8) -> Result<(SocketAddr
             let host = std::str::from_utf8(&buf[..len[0] as usize])?.to_string();
             let port = u16::from_be_bytes([buf[len[0] as usize], buf[len[0] as usize + 1]]);
             Ok((SocketAddr::from(([0, 0, 0, 0], port)), Some(host)))
-        }
+        },
         0x04 => {
             let mut buf = [0u8; 18];
             stream.read_exact(&mut buf).await?;
@@ -198,7 +198,7 @@ async fn read_socks_addr(stream: &mut TcpStream, atyp: u8) -> Result<(SocketAddr
             ]);
             let port = u16::from_be_bytes([buf[16], buf[17]]);
             Ok((SocketAddr::from((ip, port)), None))
-        }
+        },
         _ => anyhow::bail!("unsupported socks address type {atyp}"),
     }
 }
@@ -238,9 +238,28 @@ async fn handle_http_connect(
             domain,
         )
         .await
-    } else if method == "GET" || method == "POST" || method == "HEAD" || method == "PUT" || method == "DELETE" || method == "OPTIONS" || method == "PATCH" {
+    } else if method == "GET"
+        || method == "POST"
+        || method == "HEAD"
+        || method == "PUT"
+        || method == "DELETE"
+        || method == "OPTIONS"
+        || method == "PATCH"
+    {
         // 普通 HTTP 方法：GET, POST 等
-        handle_http_proxy(stream, peer, inbound_tag, inbound_type, dialer, dns, method, target, req, &buf[..n]).await
+        handle_http_proxy(
+            stream,
+            peer,
+            inbound_tag,
+            inbound_type,
+            dialer,
+            dns,
+            method,
+            target,
+            req,
+            &buf[..n],
+        )
+        .await
     } else {
         anyhow::bail!("unsupported HTTP method: {}", method)
     }
@@ -402,8 +421,7 @@ async fn handle_http_proxy(
 
 fn parse_http_url(url: &str) -> Result<(String, u16, String)> {
     // 处理完整 URL: http://example.com/path 或 http://example.com:8080/path
-    if url.starts_with("http://") {
-        let without_scheme = &url[7..];
+    if let Some(without_scheme) = url.strip_prefix("http://") {
         if let Some(slash_pos) = without_scheme.find('/') {
             let host_port = &without_scheme[..slash_pos];
             let path = &without_scheme[slash_pos..];
@@ -442,7 +460,13 @@ fn parse_http_url(url: &str) -> Result<(String, u16, String)> {
     anyhow::bail!("invalid HTTP URL: {}", url)
 }
 
-fn rewrite_http_request(method: &str, host: &str, port: u16, path: &str, original_request: &str) -> Result<String> {
+fn rewrite_http_request(
+    method: &str,
+    host: &str,
+    port: u16,
+    path: &str,
+    original_request: &str,
+) -> Result<String> {
     let mut lines: Vec<&str> = original_request.lines().collect();
 
     if lines.is_empty() {

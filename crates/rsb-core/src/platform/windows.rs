@@ -60,15 +60,15 @@ pub fn route_add(cidr: &str, iface: &str) -> Result<()> {
         match dest {
             IpAddr::V4(v4) => {
                 row.DestinationPrefix.Prefix.si_family = AF_INET;
-                row.DestinationPrefix.Prefix.Ipv4.sin_family = AF_INET as u16;
+                row.DestinationPrefix.Prefix.Ipv4.sin_family = AF_INET;
                 row.DestinationPrefix.Prefix.Ipv4.sin_addr.S_un.S_addr =
                     u32::from_ne_bytes(v4.octets());
-            }
+            },
             IpAddr::V6(v6) => {
-                row.DestinationPrefix.Prefix.si_family = AF_INET6 as u16;
-                row.DestinationPrefix.Prefix.Ipv6.sin6_family = AF_INET6 as u16;
+                row.DestinationPrefix.Prefix.si_family = AF_INET6;
+                row.DestinationPrefix.Prefix.Ipv6.sin6_family = AF_INET6;
                 row.DestinationPrefix.Prefix.Ipv6.sin6_addr = in6_addr(v6);
-            }
+            },
         }
         if CreateIpForwardEntry2(&row) != 0 {
             anyhow::bail!("CreateIpForwardEntry2 failed for {cidr}");

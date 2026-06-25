@@ -57,7 +57,7 @@ impl RuleSetCache {
                     tracing::debug!(path = %path.display(), tag, "rule-set cache updated");
                 }
                 Ok(bytes)
-            }
+            },
             Err(err) => {
                 if let Some(bytes) = cached {
                     tracing::warn!(tag, %url, error = %err, "rule-set fetch failed, using cache");
@@ -65,7 +65,7 @@ impl RuleSetCache {
                 } else {
                     Err(err).with_context(|| format!("fetch rule-set `{url}`"))
                 }
-            }
+            },
         }
     }
 }

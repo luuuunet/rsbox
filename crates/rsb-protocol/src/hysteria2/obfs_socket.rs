@@ -134,8 +134,8 @@ impl AsyncUdpSocket for ObfsUdpSocket {
                         }
                     }
                     return Poll::Ready(Ok(count));
-                }
-                Err(e) if e.kind() == io::ErrorKind::WouldBlock => {}
+                },
+                Err(e) if e.kind() == io::ErrorKind::WouldBlock => {},
                 Err(e) => return Poll::Ready(Err(e)),
             }
         }

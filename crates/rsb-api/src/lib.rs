@@ -26,6 +26,12 @@ pub struct ClashApiState {
     cache: Option<Arc<CacheFileService>>,
 }
 
+impl Default for ClashApiServer {
+    fn default() -> Self {
+        Self::new()
+    }
+}
+
 impl ClashApiServer {
     pub fn new() -> Self {
         Self { handle: None }

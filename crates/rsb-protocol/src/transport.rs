@@ -145,13 +145,13 @@ pub fn encode_socks_address(addr: SocketAddr) -> Vec<u8> {
             buf.extend_from_slice(&v4.ip().octets());
             buf.extend_from_slice(&v4.port().to_be_bytes());
             buf
-        }
+        },
         SocketAddr::V6(v6) => {
             let mut buf = vec![0x04];
             buf.extend_from_slice(&v6.ip().octets());
             buf.extend_from_slice(&v6.port().to_be_bytes());
             buf
-        }
+        },
     }
 }
 
@@ -161,12 +161,12 @@ pub fn encode_vless_address(dest: SocketAddr) -> Vec<u8> {
             let mut buf = vec![0x01];
             buf.extend_from_slice(&v4.ip().octets());
             buf
-        }
+        },
         SocketAddr::V6(v6) => {
             let mut buf = vec![0x03];
             buf.extend_from_slice(&v6.ip().octets());
             buf
-        }
+        },
     }
 }
 

@@ -77,7 +77,7 @@ pub fn is_private_ip(ip: IpAddr) -> bool {
                 || (o[0] == 192 && o[1] == 168)
                 || o[0] == 127
                 || (o[0] == 169 && o[1] == 254)
-        }
+        },
         IpAddr::V6(v6) => {
             let o = v6.octets();
             o == [0u8; 16]
@@ -99,6 +99,6 @@ pub fn is_private_ip(ip: IpAddr) -> bool {
                     && o[15] == 1
                 || (o[0] & 0xfe) == 0xfc
                 || (o[0] == 0xfe && (o[1] & 0xc0) == 0x80)
-        }
+        },
     }
 }

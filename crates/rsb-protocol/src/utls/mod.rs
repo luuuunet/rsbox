@@ -79,7 +79,7 @@ pub async fn connect(
         Err(err) => {
             tracing::warn!(error = %err, "utls handshake failed, falling back to rustls");
             utls_rustls_fallback(server, port, tls, sni, insecure).await
-        }
+        },
     }
 }
 

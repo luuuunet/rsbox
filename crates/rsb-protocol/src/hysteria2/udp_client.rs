@@ -22,7 +22,7 @@ pub fn hy2_udp_socket(conn: Arc<Connection>, session_id: u32) -> ProxyUdpSocket 
                             }
                         }
                     }
-                }
+                },
                 Err(_) => break,
             }
         }

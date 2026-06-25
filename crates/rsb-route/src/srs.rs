@@ -66,10 +66,10 @@ fn parse_default_rule(reader: &mut Cursor<Vec<u8>>, out: &mut SrsCompiled) -> Re
                 let (domains, suffixes) = read_domain_matcher(reader)?;
                 out.domains.extend(domains);
                 out.domain_suffixes.extend(suffixes);
-            }
+            },
             RULE_ITEM_DOMAIN_KEYWORD => {
                 out.domain_keywords.extend(read_string_list(reader)?);
-            }
+            },
             RULE_ITEM_IPCIDR => {
                 let ranges = read_ip_set(reader)?;
                 for (from, to) in ranges {
@@ -83,11 +83,11 @@ fn parse_default_rule(reader: &mut Cursor<Vec<u8>>, out: &mut SrsCompiled) -> Re
                         out.ip_ranges.push((from, to));
                     }
                 }
-            }
+            },
             RULE_ITEM_FINAL => {
                 let _invert = read_u8(reader)?;
                 break;
-            }
+            },
             other => skip_rule_item(reader, other)?,
         }
     }
@@ -98,28 +98,28 @@ fn skip_rule_item(reader: &mut Cursor<Vec<u8>>, item: u8) -> Result<()> {
     match item {
         0 | 7 | 9 => {
             let _ = read_u16_list(reader)?;
-        }
+        },
         1 | 3 | 4 | 8 | 10 | 11 | 12 | 13 | 14 | 15 | 17 | 23 => {
             let _ = read_string_list(reader)?;
-        }
+        },
         2 | 16 => {
             let _ = read_domain_matcher(reader)?;
-        }
+        },
         5 | 6 => {
             let _ = read_ip_set(reader)?;
-        }
+        },
         18 => {
             let len = read_uvarint(reader)? as usize;
             if len > 0 {
                 let mut buf = vec![0u8; len];
                 std::io::Read::read_exact(reader, &mut buf)?;
             }
-        }
-        19 | 20 => {}
+        },
+        19 | 20 => {},
         21 | 22 => skip_prefix_map(reader)?,
         other => {
             tracing::debug!(item = other, "skip unknown srs rule item");
-        }
+        },
     }
     Ok(())
 }
@@ -130,7 +130,7 @@ fn skip_prefix_map(reader: &mut Cursor<Vec<u8>>) -> Result<()> {
         let _key = read_u8(reader)?;
         let prefix_count = read_uvarint(reader)? as usize;
         for _ in 0..prefix_count {
-            let _ = read_ip_prefix(reader)?;
+            read_ip_prefix(reader)?;
         }
     }
     Ok(())
@@ -288,7 +288,7 @@ fn read_ip(reader: &mut Cursor<Vec<u8>>) -> Result<IpAddr> {
             let mut octets = [0u8; 16];
             octets.copy_from_slice(&buf);
             Ok(IpAddr::V6(Ipv6Addr::from(octets)))
-        }
+        },
         _ => bail!("invalid ip length {len}"),
     }
 }

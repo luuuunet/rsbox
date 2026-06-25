@@ -1,9 +1,7 @@
 use crate::transport::{self};
 use anyhow::{Context, Result};
 use async_trait::async_trait;
-use rsb_core::{
-    BoxError, Inbound, Network, Outbound, ProxyConn, ProxyUdpSocket,
-};
+use rsb_core::{BoxError, Inbound, Network, Outbound, ProxyConn, ProxyUdpSocket};
 use serde_json::Value;
 use std::net::SocketAddr;
 use tokio::io::AsyncWriteExt;
@@ -139,11 +137,11 @@ fn build_vless_request(uuid: Uuid, dest: SocketAddr, flow: Option<&str>, command
             let pb = crate::xtls_vision::encode_vision_addons(f);
             buf.push(pb.len() as u8);
             buf.extend_from_slice(&pb);
-        }
+        },
         Some(f) => {
             buf.push(f.len() as u8);
             buf.extend_from_slice(f.as_bytes());
-        }
+        },
         None => buf.push(0),
     }
     buf.push(command);
@@ -164,10 +162,10 @@ impl Outbound for VlessOutbound {
         &[Network::Tcp, Network::Udp]
     }
     async fn dial_tcp(&self, destination: SocketAddr) -> Result<ProxyConn, BoxError> {
-        self.connect(destination).await.map_err(Into::into)
+        self.connect(destination).await
     }
     async fn dial_udp(&self, destination: SocketAddr) -> Result<ProxyUdpSocket, BoxError> {
-        self.connect_udp(destination).await.map_err(Into::into)
+        self.connect_udp(destination).await
     }
     async fn close(&self) -> Result<(), BoxError> {
         Ok(())
@@ -321,7 +319,7 @@ pub fn read_address(data: &[u8], atyp: u8) -> Result<(String, usize)> {
             }
             let ip = std::net::Ipv4Addr::new(data[0], data[1], data[2], data[3]);
             Ok((ip.to_string(), 4))
-        }
+        },
         0x02 => {
             if data.is_empty() {
                 anyhow::bail!("truncated domain");
@@ -331,14 +329,14 @@ pub fn read_address(data: &[u8], atyp: u8) -> Result<(String, usize)> {
                 anyhow::bail!("truncated domain name");
             }
             Ok((std::str::from_utf8(&data[1..1 + len])?.to_string(), 1 + len))
-        }
+        },
         0x03 => {
             if data.len() < 16 {
                 anyhow::bail!("truncated ipv6");
             }
             let ip = std::net::Ipv6Addr::from(<[u8; 16]>::try_from(&data[..16]).unwrap());
             Ok((ip.to_string(), 16))
-        }
+        },
         _ => anyhow::bail!("unsupported address type {atyp}"),
     }
 }

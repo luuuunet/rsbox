@@ -70,7 +70,7 @@ pub async fn run(config: Arc<Hy2ServerConfig>) -> Result<()> {
                     if let Err(err) = serve_connection(state, connection).await {
                         tracing::debug!(error = %err, "hysteria2 connection ended");
                     }
-                }
+                },
                 Err(err) => tracing::warn!(error = %err, "hysteria2 accept failed"),
             }
         });

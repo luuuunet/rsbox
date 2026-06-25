@@ -37,7 +37,7 @@ pub fn encode_vless_addons(flow: Option<&str>) -> Vec<u8> {
             out.push(f.len() as u8);
             out.extend_from_slice(f.as_bytes());
             out
-        }
+        },
         None => vec![0],
     }
 }
@@ -151,7 +151,7 @@ where
                     3 => st.remaining_content |= b as i32,
                     2 => st.remaining_pad = (b as i32) << 8,
                     1 => st.remaining_pad |= b as i32,
-                    _ => {}
+                    _ => {},
                 }
                 st.remaining_cmd -= 1;
             } else if st.remaining_content > 0 {
@@ -266,7 +266,7 @@ where
                         self.read_buf.extend_from_slice(&plain[put..]);
                     }
                     return std::task::Poll::Ready(Ok(()));
-                }
+                },
             }
         }
     }

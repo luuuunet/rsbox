@@ -126,7 +126,7 @@ async fn handle_usbip_client(
             if reply_import(stream, devices).await? {
                 usbip_data_loop(stream).await?;
             }
-        }
+        },
         USBIP_OP_REQ_EXPORT => reply_export(stream).await?,
         other => anyhow::bail!("unsupported usbip opcode {other:#x}"),
     }
@@ -137,7 +137,7 @@ async fn usbip_data_loop(stream: &mut tokio::net::TcpStream) -> Result<()> {
     let mut hdr = [0u8; USBIP_HEADER_LEN];
     loop {
         match stream.read_exact(&mut hdr).await {
-            Ok(_) => {}
+            Ok(_) => {},
             Err(e) if e.kind() == std::io::ErrorKind::UnexpectedEof => break,
             Err(e) => return Err(e.into()),
         }
@@ -151,11 +151,11 @@ async fn usbip_data_loop(stream: &mut tokio::net::TcpStream) -> Result<()> {
                 }
                 hdr[0..4].copy_from_slice(&USBIP_RET_SUBMIT.to_be_bytes());
                 stream.write_all(&hdr).await?;
-            }
+            },
             USBIP_CMD_UNLINK => {
                 hdr[0..4].copy_from_slice(&USBIP_RET_UNLINK.to_be_bytes());
                 stream.write_all(&hdr).await?;
-            }
+            },
             _ => break,
         }
     }

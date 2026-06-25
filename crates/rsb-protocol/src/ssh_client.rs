@@ -75,10 +75,10 @@ fn open_channel(session: Arc<Session>, host: &str, port: u16) -> Result<SshAsync
                         if read_tx.send(buf[..n].to_vec()).is_err() {
                             break;
                         }
-                    }
+                    },
                     Err(e) if e.kind() == std::io::ErrorKind::WouldBlock => {
                         std::thread::sleep(std::time::Duration::from_millis(1));
-                    }
+                    },
                     Err(_) => break,
                 }
             }

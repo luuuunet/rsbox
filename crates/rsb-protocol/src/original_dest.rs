@@ -111,12 +111,12 @@ async fn macos_original_dest(stream: &TcpStream) -> Result<SocketAddr> {
             nl.af = libc::AF_INET as u8;
             nl.saddr[..4].copy_from_slice(&ra_ip.octets());
             nl.daddr[..4].copy_from_slice(&la_ip.octets());
-        }
+        },
         (IpAddr::V6(ra_ip), IpAddr::V6(la_ip)) => {
             nl.af = libc::AF_INET6 as u8;
             nl.saddr.copy_from_slice(&ra_ip.octets());
             nl.daddr.copy_from_slice(&la_ip.octets());
-        }
+        },
         _ => anyhow::bail!("address family mismatch on redirect socket"),
     }
     let ra_port = ra.port();

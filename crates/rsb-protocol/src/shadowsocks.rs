@@ -1,8 +1,7 @@
 use anyhow::{Context, Result};
 use async_trait::async_trait;
 use rsb_core::{
-    tcp_stream, BoxError, Inbound, Network, Outbound, ProxyConn, ProxyUdpIo,
-    ProxyUdpSocket,
+    tcp_stream, BoxError, Inbound, Network, Outbound, ProxyConn, ProxyUdpIo, ProxyUdpSocket,
 };
 use serde_json::Value;
 use shadowsocks::config::ServerConfig;
@@ -152,7 +151,7 @@ fn ss_address_to_socket_addr(addr: &Address) -> std::io::Result<SocketAddr> {
             addrs
                 .next()
                 .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::NotFound, "resolve ss addr"))
-        }
+        },
     }
 }
 
@@ -236,7 +235,7 @@ async fn serve_ss_client(stream: TcpStream, server_config: Arc<ServerConfig>) ->
                 .next()
                 .context("resolve ss target")?;
             TcpStream::connect(addr).await?
-        }
+        },
     };
     crate::inbound_proxy::relay_streams(&mut ss, &mut remote).await
 }

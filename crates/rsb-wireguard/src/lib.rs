@@ -265,17 +265,17 @@ async fn handle_datagram(
             let _ = sock.send_to(packet, reply_to).await;
             drain_tunn(sock, tunn, reply_to, out).await;
             true
-        }
+        },
         TunnResult::WriteToTunnelV4(pkt, _) | TunnResult::WriteToTunnelV6(pkt, _) => {
             let mut dev = tun.lock().await;
             let _ = dev.write_all(pkt).await;
             drain_tunn(sock, tunn, reply_to, out).await;
             true
-        }
+        },
         TunnResult::Done => {
             drain_tunn(sock, tunn, reply_to, out).await;
             true
-        }
+        },
         TunnResult::Err(_) => false,
     }
 }
@@ -287,12 +287,9 @@ async fn encapsulate_to_peer(
     packet: &[u8],
     out: &mut [u8],
 ) {
-    match tunn.encapsulate(packet, out) {
-        TunnResult::WriteToNetwork(wg_pkt) => {
-            let _ = sock.send_to(wg_pkt, endpoint).await;
-            drain_tunn(sock, tunn, endpoint, out).await;
-        }
-        _ => {}
+    if let TunnResult::WriteToNetwork(wg_pkt) = tunn.encapsulate(packet, out) {
+        let _ = sock.send_to(wg_pkt, endpoint).await;
+        drain_tunn(sock, tunn, endpoint, out).await;
     }
 }
 
@@ -301,7 +298,7 @@ async fn drain_tunn(sock: &UdpSocket, tunn: &mut Tunn, endpoint: SocketAddr, out
         match tunn.decapsulate(None, &[], out) {
             TunnResult::WriteToNetwork(packet) => {
                 let _ = sock.send_to(packet, endpoint).await;
-            }
+            },
             TunnResult::Done => break,
             TunnResult::Err(_) => break,
             _ => break,
@@ -311,7 +308,7 @@ async fn drain_tunn(sock: &UdpSocket, tunn: &mut Tunn, endpoint: SocketAddr, out
         match tunn.update_timers(out) {
             TunnResult::WriteToNetwork(packet) => {
                 let _ = sock.send_to(packet, endpoint).await;
-            }
+            },
             TunnResult::Done => break,
             _ => break,
         }
@@ -327,12 +324,12 @@ fn parse_ip_dest(packet: &[u8]) -> Option<IpAddr> {
         4 if packet.len() >= 20 => {
             let dst = Ipv4Addr::new(packet[16], packet[17], packet[18], packet[19]);
             Some(IpAddr::V4(dst))
-        }
+        },
         6 if packet.len() >= 40 => {
             let mut oct = [0u8; 16];
             oct.copy_from_slice(&packet[24..40]);
             Some(IpAddr::V6(Ipv6Addr::from(oct)))
-        }
+        },
         _ => None,
     }
 }

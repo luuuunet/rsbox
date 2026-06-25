@@ -191,7 +191,7 @@ impl Outbound for SshOutbound {
         &[Network::Tcp]
     }
     async fn dial_tcp(&self, destination: SocketAddr) -> Result<ProxyConn, BoxError> {
-        self.pool.dial_tcp(destination).await.map_err(Into::into)
+        self.pool.dial_tcp(destination).await
     }
     async fn dial_udp(&self, _: SocketAddr) -> Result<ProxyUdpSocket, BoxError> {
         anyhow::bail!("ssh udp not supported")

@@ -26,7 +26,7 @@ where
             match read_frame(&mut reader).await {
                 Ok((payload, addr)) => {
                     let _ = tx.send((payload, addr));
-                }
+                },
                 Err(_) => break,
             }
         }
@@ -77,12 +77,12 @@ fn encode_frame(buf: &[u8], target: SocketAddr) -> Vec<u8> {
             frame.push(0x01);
             frame.extend_from_slice(&v4.ip().octets());
             frame.extend_from_slice(&v4.port().to_be_bytes());
-        }
+        },
         SocketAddr::V6(v6) => {
             frame.push(0x04);
             frame.extend_from_slice(&v6.ip().octets());
             frame.extend_from_slice(&v6.port().to_be_bytes());
-        }
+        },
     }
     frame.extend_from_slice(&(buf.len() as u16).to_be_bytes());
     frame.extend_from_slice(buf);
@@ -102,7 +102,7 @@ where
             let mut port = [0u8; 2];
             reader.read_exact(&mut port).await?;
             SocketAddr::from((Ipv4Addr::from(ip), u16::from_be_bytes(port)))
-        }
+        },
         0x03 => {
             let mut l = [0u8; 1];
             reader.read_exact(&mut l).await?;
@@ -117,20 +117,20 @@ where
             addrs
                 .next()
                 .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::NotFound, "resolve host"))?
-        }
+        },
         0x04 => {
             let mut ip = [0u8; 16];
             reader.read_exact(&mut ip).await?;
             let mut port = [0u8; 2];
             reader.read_exact(&mut port).await?;
             SocketAddr::from((Ipv6Addr::from(ip), u16::from_be_bytes(port)))
-        }
+        },
         other => {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::InvalidData,
                 format!("unsupported atyp {other}"),
             ));
-        }
+        },
     };
     let mut len_buf = [0u8; 2];
     reader.read_exact(&mut len_buf).await?;

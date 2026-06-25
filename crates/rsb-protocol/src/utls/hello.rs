@@ -53,7 +53,7 @@ pub fn hello_layout(hello: &[u8]) -> Option<HelloLayout> {
     })
 }
 
-pub fn client_hello_random<'a>(hello: &'a [u8]) -> Option<&'a [u8; 32]> {
+pub fn client_hello_random(hello: &[u8]) -> Option<&[u8; 32]> {
     let layout = hello_layout(hello)?;
     hello
         .get(layout.random_offset..layout.random_offset + 32)?
@@ -108,7 +108,7 @@ pub fn build_client_hello(profile: Profile, sni: &str, key_share: &[u8; 32]) -> 
             push_ext(&mut exts, 0x0033, &encode_key_share(key_share));
             push_ext(&mut exts, 0x0010, &encode_alpn(&["h2", "http/1.1"]));
             push_ext(&mut exts, 0x000d, &encode_sig_algs());
-        }
+        },
         Profile::Safari | Profile::Ios => {
             push_ext(&mut exts, 0x0000, &encode_sni(sni));
             push_ext(&mut exts, 0x0017, &[]);
@@ -120,7 +120,7 @@ pub fn build_client_hello(profile: Profile, sni: &str, key_share: &[u8; 32]) -> 
             push_ext(&mut exts, 0x0010, &encode_alpn(&["h2", "http/1.1"]));
             push_ext(&mut exts, 0x000d, &encode_sig_algs());
             push_ext(&mut exts, 0x002d, &[0x01, 0x01]);
-        }
+        },
         _ => {
             push_ext_u16(&mut exts, g1, &[]);
             push_ext(&mut exts, 0x0000, &encode_sni(sni));
@@ -134,7 +134,7 @@ pub fn build_client_hello(profile: Profile, sni: &str, key_share: &[u8; 32]) -> 
             push_ext(&mut exts, 0x000d, &encode_sig_algs());
             push_ext(&mut exts, 0x002d, &[0x01, 0x01]);
             push_ext_u16(&mut exts, g2, &[]);
-        }
+        },
     }
 
     let mut body = Vec::new();

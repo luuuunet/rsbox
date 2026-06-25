@@ -1,9 +1,7 @@
 use crate::transport::{self, sha224_hex};
 use anyhow::{Context, Result};
 use async_trait::async_trait;
-use rsb_core::{
-    proxy_box, BoxError, Inbound, Network, Outbound, ProxyConn, ProxyUdpSocket,
-};
+use rsb_core::{proxy_box, BoxError, Inbound, Network, Outbound, ProxyConn, ProxyUdpSocket};
 use serde_json::Value;
 use std::net::SocketAddr;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -94,10 +92,10 @@ impl Outbound for TrojanOutbound {
         &[Network::Tcp, Network::Udp]
     }
     async fn dial_tcp(&self, destination: SocketAddr) -> Result<ProxyConn, BoxError> {
-        self.connect(destination).await.map_err(Into::into)
+        self.connect(destination).await
     }
     async fn dial_udp(&self, _destination: SocketAddr) -> Result<ProxyUdpSocket, BoxError> {
-        self.connect_udp().await.map_err(Into::into)
+        self.connect_udp().await
     }
     async fn close(&self) -> Result<(), BoxError> {
         Ok(())

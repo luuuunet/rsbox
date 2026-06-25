@@ -89,7 +89,7 @@ fn looks_like_quic(data: &[u8]) -> bool {
     if data[0] & 0x80 != 0 {
         return data.len() >= 5;
     }
-    data.len() >= 1 && data[0] & 0x40 == 0
+    !data.is_empty() && data[0] & 0x40 == 0
 }
 
 fn looks_like_http(data: &[u8]) -> bool {

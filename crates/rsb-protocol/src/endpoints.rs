@@ -187,13 +187,13 @@ pub fn build_endpoints(options: &rsb_config::Options) -> Result<Vec<EndpointHand
                     tag,
                     ep.raw.clone(),
                 )?));
-            }
+            },
             rsb_constant::TYPE_TAILSCALE => {
                 out.push(EndpointHandle::Tailscale(TailscaleEndpoint::new(
                     tag,
                     ep.raw.clone(),
                 )?));
-            }
+            },
             other => anyhow::bail!(
                 "unknown endpoint type: {other} (known: {})",
                 rsb_constant::ALL_ENDPOINT_TYPES.join(", ")

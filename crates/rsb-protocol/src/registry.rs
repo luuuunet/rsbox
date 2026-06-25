@@ -69,12 +69,12 @@ pub fn build_outbound(
             let sel = group::SelectorOutbound::new(tag, ob.raw.clone(), shared.clone())?;
             controller.register_selector(sel.control());
             Box::new(sel)
-        }
+        },
         TYPE_URLTEST => {
             let ut = group::UrlTestOutbound::new(tag, ob.raw.clone(), shared.clone())?;
             controller.register_urltest(ut.control());
             Box::new(ut)
-        }
+        },
         other => bail!("unknown outbound type: {other}"),
     })
 }

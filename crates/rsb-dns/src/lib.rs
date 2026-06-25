@@ -111,12 +111,12 @@ impl DnsRouter {
                             return Ok(vec![ip]);
                         }
                         Vec::new()
-                    }
+                    },
                     DnsTransport::Udp(addr) => query_udp(*addr, host).await.unwrap_or_default(),
                     DnsTransport::Tcp(addr) => query_tcp(*addr, host).await.unwrap_or_default(),
                     DnsTransport::Tls { addr, sni } => {
                         query_dot(*addr, sni, host).await.unwrap_or_default()
-                    }
+                    },
                     DnsTransport::Https(url) => query_doh(url, host).await.unwrap_or_default(),
                     DnsTransport::Resolved(tag) => {
                         if let Some(router) = resolved_dns(tag) {
@@ -125,7 +125,7 @@ impl DnsRouter {
                             continue;
                         }
                         Vec::new()
-                    }
+                    },
                 };
                 if !addrs.is_empty() {
                     return Ok(addrs);
@@ -164,7 +164,7 @@ impl DnsRouter {
                     DnsTransport::Https(url) => query_doh_raw(url, query).await,
                     DnsTransport::FakeIp => {
                         anyhow::bail!("raw exchange not supported for fakeip server")
-                    }
+                    },
                     DnsTransport::Resolved(tag) => {
                         let router = resolved_dns(tag)
                             .with_context(|| format!("resolved service `{tag}` not running"))?;
@@ -172,7 +172,7 @@ impl DnsRouter {
                         current = pinned.as_ref().expect("pinned").as_ref();
                         skip = true;
                         continue 'router;
-                    }
+                    },
                 };
                 if result.is_ok() {
                     return result;
@@ -455,13 +455,13 @@ pub fn parse_response(buf: &[u8]) -> Result<Vec<IpAddr>> {
                     buf[offset + 2],
                     buf[offset + 3],
                 )));
-            }
+            },
             28 if rdlen == 16 => {
                 let mut octets = [0u8; 16];
                 octets.copy_from_slice(&buf[offset..offset + 16]);
                 addrs.push(IpAddr::V6(Ipv6Addr::from(octets)));
-            }
-            _ => {}
+            },
+            _ => {},
         }
         offset += rdlen;
     }
@@ -483,11 +483,11 @@ pub fn build_response(query: &[u8], addrs: &[IpAddr]) -> Result<Vec<u8>> {
             IpAddr::V4(v4) => {
                 out.extend_from_slice(&[0, 1, 0, 1, 0, 0, 0, 60, 0, 4]);
                 out.extend_from_slice(&v4.octets());
-            }
+            },
             IpAddr::V6(v6) => {
                 out.extend_from_slice(&[0, 28, 0, 1, 0, 0, 0, 60, 0, 16]);
                 out.extend_from_slice(&v6.octets());
-            }
+            },
         }
     }
     Ok(out)

@@ -27,7 +27,8 @@ pub struct Hysteria2Outbound {
     obfs: Option<Arc<obfs::Salamander>>,
     connection: tokio::sync::Mutex<Option<Arc<quinn::Connection>>>,
     // 保持 H3 driver 和 send_request 活着，防止连接关闭
-    _h3_keep_alive: tokio::sync::Mutex<Option<(tokio::task::JoinHandle<()>, Box<dyn std::any::Any + Send>)>>,
+    _h3_keep_alive:
+        tokio::sync::Mutex<Option<(tokio::task::JoinHandle<()>, Box<dyn std::any::Any + Send>)>>,
 }
 
 impl Hysteria2Outbound {

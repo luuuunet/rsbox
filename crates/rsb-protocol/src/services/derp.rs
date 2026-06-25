@@ -229,7 +229,7 @@ impl DerpService {
                             _ = stun_shutdown.changed() => { if *stun_shutdown.borrow() { break; } }
                             recv = sock.recv_from(&mut buf) => {
                                 let Ok((n, peer)) = recv else { break };
-                                if n >= 20 && &buf[4..8] == [0x21, 0x12, 0xA4, 0x42] {
+                                if n >= 20 && buf[4..8] == [0x21, 0x12, 0xA4, 0x42] {
                                     let _ = sock.send_to(&buf[..n], peer).await;
                                 }
                             }
@@ -300,7 +300,7 @@ fn home_page(home: Option<&str>) -> Response {
             .into_response(),
         Some(url) if url.starts_with("http://") || url.starts_with("https://") => {
             Redirect::temporary(url).into_response()
-        }
+        },
         _ => Response::builder()
             .header("content-type", "text/html; charset=utf-8")
             .body(String::from(

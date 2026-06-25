@@ -38,7 +38,7 @@ impl RuleRouter {
             .rule_set_download
             .as_ref()
             .and_then(|opt| opt.path.as_ref())
-            .map(|p| RuleSetCache::new(p))
+            .map(RuleSetCache::new)
             .or_else(|| Some(RuleSetCache::default_path()));
         let rule_sets = Arc::new(HashMap::new());
         Self {
@@ -68,10 +68,10 @@ impl RuleRouter {
                 Ok(compiled) => {
                     info!(tag = %tag, domains = compiled.domains.len(), cidrs = compiled.ip_cidrs.len(), "geo rule-set loaded");
                     map.insert(tag, Arc::new(compiled));
-                }
+                },
                 Err(err) => {
                     tracing::warn!(tag = %tag, error = %err, "geo rule-set load failed");
-                }
+                },
             }
         }
         if geoip_tags.contains("private") {
@@ -185,15 +185,14 @@ impl Router for RuleRouter {
                 }
                 if !matched {
                     for code in &rule.geoip {
-                        if code == "private" {
-                            if metadata
+                        if code == "private"
+                            && metadata
                                 .destination
                                 .map(|d| is_private_ip(d.ip()))
                                 .unwrap_or(false)
-                            {
-                                matched = true;
-                                break;
-                            }
+                        {
+                            matched = true;
+                            break;
                         }
                         let tag = format!("geoip-{code}");
                         if let Some(rs) = self.rule_sets.get(&tag) {
@@ -500,11 +499,11 @@ fn ip_in_range(ip: IpAddr, from: IpAddr, to: IpAddr) -> bool {
         (IpAddr::V4(a), IpAddr::V4(f), IpAddr::V4(t)) => {
             let ai = u32::from(a);
             ai >= u32::from(f) && ai <= u32::from(t)
-        }
+        },
         (IpAddr::V6(a), IpAddr::V6(f), IpAddr::V6(t)) => {
             let ai = u128::from(a);
             ai >= u128::from(f) && ai <= u128::from(t)
-        }
+        },
         _ => false,
     }
 }
@@ -527,7 +526,7 @@ fn ip_in_cidr(ip: IpAddr, cidr: &str) -> bool {
                 u32::MAX << (32 - prefix_len)
             };
             (u32::from(a) & mask) == (u32::from(b) & mask)
-        }
+        },
         (IpAddr::V6(a), IpAddr::V6(b)) => {
             let ai = u128::from(a);
             let bi = u128::from(b);
@@ -537,7 +536,7 @@ fn ip_in_cidr(ip: IpAddr, cidr: &str) -> bool {
                 u128::MAX << (128 - prefix_len)
             };
             (ai & mask) == (bi & mask)
-        }
+        },
         _ => false,
     }
 }

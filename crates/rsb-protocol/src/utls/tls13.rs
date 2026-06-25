@@ -77,7 +77,7 @@ impl UtlsTlsStream {
             let (plain, content_type) =
                 read_encrypted_record(&mut tcp, &read_cipher, &hs.read_iv, &mut read_seq).await?;
             server_msgs.extend_from_slice(&plain);
-            if content_type == 0x16 || server_msgs.iter().any(|&b| b == 0x0b) {
+            if content_type == 0x16 || server_msgs.contains(&0x0b) {
                 break;
             }
         }
@@ -302,7 +302,7 @@ impl AsyncRead for UtlsTlsStream {
         }
         let mut hdr = [0u8; 5];
         match Pin::new(&mut self.tcp).poll_read(cx, &mut ReadBuf::new(&mut hdr)) {
-            Poll::Ready(Ok(())) => {}
+            Poll::Ready(Ok(())) => {},
             Poll::Ready(Err(e)) => return Poll::Ready(Err(e)),
             Poll::Pending => return Poll::Pending,
         }
@@ -317,7 +317,7 @@ impl AsyncRead for UtlsTlsStream {
         let mut rb = ReadBuf::new(&mut enc);
         while rb.remaining() > 0 {
             match Pin::new(&mut self.tcp).poll_read(cx, &mut rb) {
-                Poll::Ready(Ok(())) => {}
+                Poll::Ready(Ok(())) => {},
                 Poll::Ready(Err(e)) => return Poll::Ready(Err(e)),
                 Poll::Pending => return Poll::Pending,
             }

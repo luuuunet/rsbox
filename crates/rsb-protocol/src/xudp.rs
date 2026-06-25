@@ -27,10 +27,10 @@ pub fn global_id_for(source: Option<SocketAddr>) -> [u8; 8] {
         match src.ip() {
             std::net::IpAddr::V4(v4) => {
                 h.update(&v4.octets());
-            }
+            },
             std::net::IpAddr::V6(v6) => {
                 h.update(&v6.octets());
-            }
+            },
         }
         h.update(&src.port().to_be_bytes());
     } else {
@@ -55,7 +55,7 @@ where
             match read_xudp_frame(&mut reader).await {
                 Ok(Some((payload, addr))) => {
                     let _ = tx.send((payload, addr));
-                }
+                },
                 Ok(None) => break,
                 Err(_) => break,
             }
@@ -143,11 +143,11 @@ fn encode_address(addr: SocketAddr) -> Vec<u8> {
         SocketAddr::V4(v4) => {
             out.push(0x01);
             out.extend_from_slice(&v4.ip().octets());
-        }
+        },
         SocketAddr::V6(v6) => {
             out.push(0x03);
             out.extend_from_slice(&v6.ip().octets());
-        }
+        },
     }
     out
 }
@@ -214,7 +214,7 @@ fn decode_address(buf: &[u8]) -> std::io::Result<(String, usize)> {
         0x01 if buf.len() >= 5 => {
             let ip = Ipv4Addr::new(buf[1], buf[2], buf[3], buf[4]);
             Ok((ip.to_string(), 5))
-        }
+        },
         0x02 => {
             let len = buf[1] as usize;
             if buf.len() < 2 + len {
@@ -226,12 +226,12 @@ fn decode_address(buf: &[u8]) -> std::io::Result<(String, usize)> {
             let host = std::str::from_utf8(&buf[2..2 + len])
                 .map_err(|e| std::io::Error::new(std::io::ErrorKind::InvalidData, e))?;
             Ok((host.to_string(), 2 + len))
-        }
+        },
         0x03 if buf.len() >= 17 => {
             let mut oct = [0u8; 16];
             oct.copy_from_slice(&buf[1..17]);
             Ok((Ipv6Addr::from(oct).to_string(), 17))
-        }
+        },
         other => Err(std::io::Error::new(
             std::io::ErrorKind::InvalidData,
             format!("bad atyp {other}"),

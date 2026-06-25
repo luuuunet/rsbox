@@ -95,7 +95,7 @@ fn decode_proc_addr(raw: &str) -> Option<SocketAddr> {
         8 => {
             let n = u32::from_str_radix(ip_hex, 16).ok()?;
             Some(SocketAddr::from((Ipv4Addr::from(n.to_le_bytes()), port)))
-        }
+        },
         32 => {
             let mut o = [0u8; 16];
             for (i, chunk) in ip_hex.as_bytes().chunks(2).enumerate().take(16) {
@@ -103,7 +103,7 @@ fn decode_proc_addr(raw: &str) -> Option<SocketAddr> {
                 o[i] = u8::from_str_radix(s, 16).ok()?;
             }
             Some(SocketAddr::from((Ipv6Addr::from(o), port)))
-        }
+        },
         _ => None,
     }
 }

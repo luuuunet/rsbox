@@ -1,9 +1,7 @@
 use crate::transport::{self, address_from_socket};
 use anyhow::{Context, Result};
 use async_trait::async_trait;
-use rsb_core::{
-    BoxError, Inbound, Network, Outbound, ProxyConn, ProxyUdpSocket,
-};
+use rsb_core::{BoxError, Inbound, Network, Outbound, ProxyConn, ProxyUdpSocket};
 use serde_json::Value;
 use std::net::SocketAddr;
 use tokio::io::AsyncWriteExt;
@@ -164,7 +162,7 @@ fn build_vmess_header(
     authenticated_length: bool,
 ) -> Result<Vec<u8>> {
     use aes_gcm::aead::KeyInit;
-    
+
     use rand::RngCore;
     let mut req = Vec::new();
     req.push(1); // version
@@ -266,12 +264,10 @@ impl Outbound for VmessOutbound {
         &[Network::Tcp, Network::Udp]
     }
     async fn dial_tcp(&self, destination: SocketAddr) -> Result<ProxyConn, BoxError> {
-        self.connect(destination).await.map_err(Into::into)
+        self.connect(destination).await
     }
     async fn dial_udp(&self, destination: SocketAddr) -> Result<ProxyUdpSocket, BoxError> {
-        self.connect_udp_tunnel(destination)
-            .await
-            .map_err(Into::into)
+        self.connect_udp_tunnel(destination).await
     }
     async fn close(&self) -> Result<(), BoxError> {
         Ok(())

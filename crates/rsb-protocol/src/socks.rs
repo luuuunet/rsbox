@@ -129,12 +129,12 @@ fn encode_socks_udp_packet(payload: &[u8], target: SocketAddr) -> Vec<u8> {
             packet.push(0x01);
             packet.extend_from_slice(&v4.ip().octets());
             packet.extend_from_slice(&v4.port().to_be_bytes());
-        }
+        },
         SocketAddr::V6(v6) => {
             packet.push(0x04);
             packet.extend_from_slice(&v6.ip().octets());
             packet.extend_from_slice(&v6.port().to_be_bytes());
-        }
+        },
     }
     packet.extend_from_slice(payload);
     packet
@@ -159,7 +159,7 @@ fn decode_socks_udp_packet(packet: &[u8], buf: &mut [u8]) -> std::io::Result<(us
             let ip = Ipv4Addr::new(packet[4], packet[5], packet[6], packet[7]);
             let port = u16::from_be_bytes([packet[8], packet[9]]);
             (SocketAddr::from((ip, port)), 10)
-        }
+        },
         0x03 => {
             let len = packet[4] as usize;
             if packet.len() < 5 + len + 2 {
@@ -176,7 +176,7 @@ fn decode_socks_udp_packet(packet: &[u8], buf: &mut [u8]) -> std::io::Result<(us
                 .next()
                 .ok_or_else(|| std::io::Error::new(std::io::ErrorKind::NotFound, "resolve host"))?;
             (addr, 5 + len + 2)
-        }
+        },
         0x04 => {
             if packet.len() < 22 {
                 return Err(std::io::Error::new(
@@ -187,13 +187,13 @@ fn decode_socks_udp_packet(packet: &[u8], buf: &mut [u8]) -> std::io::Result<(us
             let ip = Ipv6Addr::from(<[u8; 16]>::try_from(&packet[4..20]).unwrap());
             let port = u16::from_be_bytes([packet[20], packet[21]]);
             (SocketAddr::from((ip, port)), 22)
-        }
+        },
         other => {
             return Err(std::io::Error::new(
                 std::io::ErrorKind::InvalidData,
                 format!("unsupported socks udp atyp {other}"),
             ));
-        }
+        },
     };
     let payload = &packet[off..];
     let n = payload.len().min(buf.len());
@@ -280,7 +280,7 @@ pub mod socks {
                 let ip = std::net::Ipv4Addr::new(rest[0], rest[1], rest[2], rest[3]);
                 let port = u16::from_be_bytes([rest[4], rest[5]]);
                 Ok(SocketAddr::from((ip, port)))
-            }
+            },
             0x03 => {
                 let mut len = [0u8; 1];
                 stream.read_exact(&mut len).await?;
@@ -294,14 +294,14 @@ pub mod socks {
                 addrs
                     .next()
                     .with_context(|| format!("resolve socks relay {host}:{port}"))
-            }
+            },
             0x04 => {
                 let mut rest = [0u8; 18];
                 stream.read_exact(&mut rest).await?;
                 let ip = std::net::Ipv6Addr::from(<[u8; 16]>::try_from(&rest[..16]).unwrap());
                 let port = u16::from_be_bytes([rest[16], rest[17]]);
                 Ok(SocketAddr::from((ip, port)))
-            }
+            },
             _ => anyhow::bail!("invalid socks address type"),
         }
     }
@@ -311,17 +311,17 @@ pub mod socks {
             0x01 => {
                 let mut rest = [0u8; 6];
                 stream.read_exact(&mut rest).await?;
-            }
+            },
             0x03 => {
                 let mut len = [0u8; 1];
                 stream.read_exact(&mut len).await?;
                 let mut rest = vec![0u8; len[0] as usize + 2];
                 stream.read_exact(&mut rest).await?;
-            }
+            },
             0x04 => {
                 let mut rest = [0u8; 18];
                 stream.read_exact(&mut rest).await?;
-            }
+            },
             _ => anyhow::bail!("invalid socks address type"),
         }
         Ok(())

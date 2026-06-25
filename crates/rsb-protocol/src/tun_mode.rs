@@ -211,7 +211,7 @@ async fn handle_tun_udp(
                     if remote_send.send_to(&buf[..n], dest).await.is_err() {
                         break;
                     }
-                }
+                },
             }
         }
     });
@@ -223,7 +223,7 @@ async fn handle_tun_udp(
                 if udp_writer.write_all(&buf[..n]).await.is_err() {
                     break;
                 }
-            }
+            },
             Err(_) => break,
         }
     }

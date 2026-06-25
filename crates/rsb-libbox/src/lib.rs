@@ -1,7 +1,7 @@
 //! C ABI for embedding rsbox (libbox-compatible subset).
 
-use rsb_constant::VERSION;
 use rsb_api::{CacheFileService, ClashApiServer, V2RayApiServer};
+use rsb_constant::VERSION;
 use rsb_protocol::RsBox;
 use std::ffi::{c_char, CStr};
 use std::sync::Mutex;
@@ -36,16 +36,14 @@ pub extern "C" fn rsbox_version() -> *const c_char {
 /// Parse config JSON; returns 0 on success.
 #[no_mangle]
 pub extern "C" fn rsbox_check_config(config_json: *const c_char) -> i32 {
-    match cstr_to_string(config_json).and_then(|text| {
-        rsb_config::Options::from_json(&text)
-            .map(|_| ())
-            .map_err(Into::into)
-    }) {
+    match cstr_to_string(config_json)
+        .and_then(|text| rsb_config::Options::from_json(&text).map(|_| ()))
+    {
         Ok(()) => 0,
         Err(err) => {
             tracing::error!(error = %err, "rsbox_check_config failed");
             -1
-        }
+        },
     }
 }
 
@@ -117,11 +115,11 @@ pub extern "C" fn rsbox_start(config_path: *const c_char) -> i32 {
                 cache,
             });
             0
-        }
+        },
         Err(err) => {
             tracing::error!(error = %err, "rsbox_start failed");
             -5
-        }
+        },
     }
 }
 
