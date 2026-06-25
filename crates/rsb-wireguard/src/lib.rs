@@ -101,8 +101,11 @@ impl WireGuardTunnel {
                     recv = sock.recv_from(&mut udp_buf) => {
                         let Ok((n, src)) = recv else { break };
                         let mut guard = peers_udp.lock().await;
+
+                        // Try to match packet to correct peer
+                        // Only update endpoint for the matched peer
+                        let mut found = false;
                         for state in guard.values_mut() {
-                            state.endpoint = Some(src);
                             if handle_datagram(
                                 &sock,
                                 &tun_io,
@@ -112,8 +115,14 @@ impl WireGuardTunnel {
                                 src,
                                 &mut wg_out,
                             ).await {
+                                // Update endpoint only for matched peer
+                                state.endpoint = Some(src);
+                                found = true;
                                 break;
                             }
+                        }
+                        if !found {
+                            log::debug!("WireGuard: unmatched packet from {}", src);
                         }
                     }
                     read = async {

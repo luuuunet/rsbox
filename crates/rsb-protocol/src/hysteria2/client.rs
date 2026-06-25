@@ -167,13 +167,10 @@ async fn authenticate(connection: &quinn::Connection, password: &str, up_mbps: u
         anyhow::bail!("hysteria2 auth failed: {}", resp.status());
     }
 
-    // 关键修复：不要 drop stream 和 send_request
-    // 使用 std::mem::forget 防止它们被 drop
-    std::mem::forget(stream);
-    std::mem::forget(send_request);
+    tracing::debug!("hysteria2: authentication completed");
 
-    tracing::debug!("hysteria2: authentication completed, kept H3 objects alive");
-
+    // Let connection be held by _h3_keep_alive field
+    // Don't use mem::forget as it prevents proper cleanup
     Ok(())
 }
 

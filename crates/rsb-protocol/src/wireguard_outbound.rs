@@ -36,12 +36,12 @@ impl WireGuardOutbound {
     }
 
     async fn ensure_started(&self) -> Result<()> {
-        {
-            let guard = self.started.lock().await;
-            if *guard {
-                return Ok(());
-            }
+        let mut guard = self.started.lock().await;
+        if *guard {
+            return Ok(());
         }
+
+        // Hold lock during entire start to prevent race condition
         #[cfg(feature = "wireguard-tunnel")]
         {
             self.tunnel.start(self.raw.clone()).await?;
@@ -49,7 +49,8 @@ impl WireGuardOutbound {
         }
         #[cfg(not(feature = "wireguard-tunnel"))]
         anyhow::bail!("wireguard outbound requires `wireguard-tunnel` feature");
-        *self.started.lock().await = true;
+
+        *guard = true;
         Ok(())
     }
 }
