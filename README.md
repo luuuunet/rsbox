@@ -95,8 +95,8 @@ rsbox/
 │   ├── rsb-route/       # 路由规则引擎
 │   ├── rsb-dns/         # DNS 解析器
 │   ├── rsb-wireguard/   # WireGuard/Tailscale 实现
-│   ├── rsb-experimental/# 实验性功能
-│   └── rsb-libbox/      # C FFI 绑定（计划中）
+│   ├── rsb-api/         # API 服务（Clash/V2Ray/Cache）
+│   └── rsb-libbox/      # C FFI 绑定（libbox 兼容）
 └── rsbox/               # CLI 入口
 ```
 
