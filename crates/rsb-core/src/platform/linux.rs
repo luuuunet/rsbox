@@ -1,7 +1,7 @@
 use anyhow::{Context, Result};
 use std::ffi::CString;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
-use std::os::fd::AsRawFd;
+use std::os::fd::{AsRawFd, FromRawFd};
 
 pub fn detect_default_interface() -> Result<String> {
     let text = std::fs::read_to_string("/proc/net/route").context("read /proc/net/route")?;
@@ -134,7 +134,7 @@ impl RtRequest {
         let sock = unsafe { socket2::Socket::from_raw_fd(fd) };
         let addr = libc::sockaddr_nl {
             nl_family: AF_NETLINK as u16,
-            nl_pad: 0,
+            nl_pad: Default::default(),
             nl_pid: 0,
             nl_groups: 0,
         };
