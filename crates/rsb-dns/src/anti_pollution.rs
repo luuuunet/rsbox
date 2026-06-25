@@ -121,12 +121,14 @@ impl AntiPollution {
     async fn query_local(&self, _domain: &str) -> Result<Vec<IpAddr>> {
         // TODO: Implement local DNS query
         // This should query the system's default DNS
+        tracing::warn!("Local DNS query not yet implemented");
         anyhow::bail!("Not implemented")
     }
 
     async fn query_trusted(&self, _domain: &str) -> Result<Vec<IpAddr>> {
         // TODO: Implement trusted DNS query
         // This should query DoH/DoT servers
+        tracing::warn!("Trusted DNS query not yet implemented");
         anyhow::bail!("Not implemented")
     }
 
