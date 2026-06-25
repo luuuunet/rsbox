@@ -4,7 +4,6 @@ use async_trait::async_trait;
 use rsb_core::{BoxError, Inbound, Network, Outbound, ProxyConn, ProxyUdpSocket};
 use serde_json::Value;
 use std::net::SocketAddr;
-use tokio::io::AsyncWriteExt;
 use tokio::net::{TcpListener, TcpStream};
 use uuid::Uuid;
 
