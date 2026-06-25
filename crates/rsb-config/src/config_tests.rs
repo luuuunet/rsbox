@@ -18,7 +18,7 @@ mod tests {
             ]
         }"#;
 
-        let result: Result<Options> = serde_json::from_str(config);
+        let result = serde_json::from_str::<Options>(config);
         assert!(result.is_ok(), "基础配置解析应该成功");
     }
 
@@ -36,7 +36,7 @@ mod tests {
             ]
         }"#;
 
-        let result: Result<Options> = serde_json::from_str(config);
+        let result = serde_json::from_str::<Options>(config);
         assert!(result.is_ok(), "多协议配置应该成功");
     }
 
@@ -57,7 +57,7 @@ mod tests {
             ]
         }"#;
 
-        let result: Result<Options> = serde_json::from_str(config);
+        let result = serde_json::from_str::<Options>(config);
         assert!(result.is_ok(), "Selector 配置应该成功");
     }
 
@@ -82,7 +82,7 @@ mod tests {
             }
         }"#;
 
-        let result: Result<Options> = serde_json::from_str(config);
+        let result = serde_json::from_str::<Options>(config);
         assert!(result.is_ok(), "路由配置应该成功");
     }
 
@@ -105,7 +105,7 @@ mod tests {
             }
         }"#;
 
-        let result: Result<Options> = serde_json::from_str(config);
+        let result = serde_json::from_str::<Options>(config);
         assert!(result.is_ok(), "DNS 配置应该成功");
     }
 
@@ -116,7 +116,7 @@ mod tests {
             "outbounds": []
         }"#;
 
-        let result: Result<Options> = serde_json::from_str(config);
+        let result = serde_json::from_str::<Options>(config);
         assert!(result.is_ok(), "空配置应该能解析");
     }
 
