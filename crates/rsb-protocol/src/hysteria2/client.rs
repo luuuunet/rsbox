@@ -157,10 +157,8 @@ async fn authenticate(connection: &quinn::Connection, password: &str, up_mbps: u
             (up_mbps as u64 * auth::MBPS_TO_BPS).to_string(),
         );
     }
-    req = req.header(
-        "hysteria-padding",
-        auth::random_padding(64, 512).as_str(),
-    );
+    let padding = auth::random_padding(64, 512);
+    req = req.header("hysteria-padding", padding.as_str());
     let mut stream = send_request.send_request(req.body(())?).await?;
     stream.finish().await?;
     let resp = stream.recv_response().await?;
@@ -225,35 +223,13 @@ impl Outbound for Hysteria2Outbound {
         tracing::debug!("hysteria2: read_result = {:?}", read_result.is_ok());
 
         let n = match read_result {
-            Ok(Ok(Some(n))) => {
-                tracing::debug!("hysteria2: successfully read {} bytes", n);
-                n
-            },
-            Ok(Ok(None)) => {
-                tracing::error!("🔴 hysteria2: stream closed by server (read returned None)");
-                anyhow::bail!("hysteria2: stream closed by server");
-            },
-            Ok(Err(e)) => {
-                tracing::error!("🔴 hysteria2: read error: {}", e);
-                return Err(e.into());
-            },
-            Err(_) => {
-                tracing::error!("🔴 hysteria2: read timeout after 10 seconds");
-                anyhow::bail!("hysteria2: read timeout");
-            },
+            Ok(Ok(Some(n))) => n,
+            Ok(Ok(None)) => anyhow::bail!("hysteria2: stream closed by server"),
+            Ok(Err(e)) => return Err(e.into()),
+            Err(_) => anyhow::bail!("hysteria2: read timeout"),
         };
 
         tracing::debug!("hysteria2: received {} bytes response", n);
-
-        // ✅ 添加：打印响应内容用于调试
-        if n > 0 {
-            tracing::error!("🔴 Hysteria2 response content ({} bytes):", n);
-            tracing::error!("🔴 Hex (first 256 bytes): {:02x?}", &resp_buf[..n.min(256)]);
-            tracing::error!(
-                "🔴 String: {}",
-                String::from_utf8_lossy(&resp_buf[..n.min(512)])
-            );
-        }
 
         let mut cursor = &resp_buf[..n];
         let (ok, _) = protocol::decode_tcp_response(&mut cursor)?;
