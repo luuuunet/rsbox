@@ -259,9 +259,9 @@ impl Outbound for SelectorOutbound {
     fn networks(&self) -> &[Network] {
         &[Network::Tcp, Network::Udp]
     }
-    async fn dial_tcp(&self, destination: SocketAddr, _domain: Option<&str>) -> Result<ProxyConn, BoxError> {
+    async fn dial_tcp(&self, destination: SocketAddr, domain: Option<&str>) -> Result<ProxyConn, BoxError> {
         let child = self.selected_tag()?;
-        self.shared.get()?.get(child)?.dial_tcp(destination, None).await
+        self.shared.get()?.get(child)?.dial_tcp(destination, domain).await
     }
     async fn dial_udp(&self, destination: SocketAddr) -> Result<ProxyUdpSocket, BoxError> {
         let child = self.selected_tag()?;
@@ -370,12 +370,12 @@ impl Outbound for UrlTestOutbound {
     fn networks(&self) -> &[Network] {
         &[Network::Tcp, Network::Udp]
     }
-    async fn dial_tcp(&self, destination: SocketAddr, _domain: Option<&str>) -> Result<ProxyConn, BoxError> {
+    async fn dial_tcp(&self, destination: SocketAddr, domain: Option<&str>) -> Result<ProxyConn, BoxError> {
         if self.handle.lock().is_none() {
             self.start_probe();
         }
         let child = self.selected_tag()?;
-        self.shared.get()?.get(child)?.dial_tcp(destination, None).await
+        self.shared.get()?.get(child)?.dial_tcp(destination, domain).await
     }
     async fn dial_udp(&self, destination: SocketAddr) -> Result<ProxyUdpSocket, BoxError> {
         let child = self.selected_tag()?;
