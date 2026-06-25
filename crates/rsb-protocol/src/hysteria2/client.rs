@@ -157,6 +157,10 @@ async fn authenticate(connection: &quinn::Connection, password: &str, up_mbps: u
             (up_mbps as u64 * auth::MBPS_TO_BPS).to_string(),
         );
     }
+    req = req.header(
+        "hysteria-padding",
+        auth::random_padding(64, 512).as_str(),
+    );
     let mut stream = send_request.send_request(req.body(())?).await?;
     stream.finish().await?;
     let resp = stream.recv_response().await?;
@@ -198,7 +202,7 @@ impl Outbound for Hysteria2Outbound {
             format_address(destination)
         };
 
-        let padding_len = 16;
+        let padding_len = auth::random_padding_len(64, 512);
         tracing::debug!(
             "hysteria2: target = {}, padding_len = {}, using_domain = {}",
             target,
@@ -207,13 +211,6 @@ impl Outbound for Hysteria2Outbound {
         );
 
         let req = protocol::encode_tcp_request(&target, padding_len);
-
-        // ✅ 打印发送的请求内容
-        tracing::error!(
-            "🔴 TCP request (first 128 bytes): {:02x?}",
-            &req[..req.len().min(128)]
-        );
-        tracing::error!("🔴 TCP request length: {} bytes", req.len());
 
         send.write_all(&req).await?;
         tracing::debug!("hysteria2: sent tcp request, waiting for response");

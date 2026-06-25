@@ -56,6 +56,11 @@ pub fn random_padding(min: usize, max: usize) -> String {
     s
 }
 
+pub fn random_padding_len(min: usize, max: usize) -> usize {
+    let span = max.saturating_sub(min) + 1;
+    min + (rand::random::<u32>() as usize % span)
+}
+
 pub fn is_auth_request(method: &http::Method, path: &str, authority: Option<&str>) -> bool {
     method == http::Method::POST
         && path == AUTH_PATH

@@ -363,60 +363,7 @@ async fn dial_and_relay(
     };
 
     let mut remote = dialer.dial_tcp(&metadata, dest).await?;
-    tracing::info!("✅ dial_tcp succeeded");
-
-    // ✅ 添加：读取第一批响应数据并打印
-    tracing::info!("🔍 Attempting to read first response from remote...");
-    let mut first_chunk = vec![0u8; 2048];
-    match tokio::time::timeout(
-        Duration::from_secs(3),
-        remote.as_mut().read(&mut first_chunk),
-    )
-    .await
-    {
-        Ok(Ok(n)) => {
-            if n > 0 {
-                tracing::error!(
-                    "🔴 Received {} bytes from remote BEFORE client sends data!",
-                    n
-                );
-                tracing::error!(
-                    "🔴 Response (first 512 bytes hex): {:02x?}",
-                    &first_chunk[..n.min(512)]
-                );
-                tracing::error!(
-                    "🔴 Response (as string): {}",
-                    String::from_utf8_lossy(&first_chunk[..n.min(512)])
-                );
-
-                // 将这些数据发送给客户端
-                if let Err(e) = client.write_all(&first_chunk[..n]).await {
-                    tracing::error!("❌ Failed to write response to client: {}", e);
-                    return Err(e.into());
-                }
-                tracing::info!("✅ Sent {} bytes to client", n);
-            } else {
-                tracing::warn!("⚠️ Remote closed connection immediately (0 bytes)");
-                return Ok(());
-            }
-        },
-        Ok(Err(e)) => {
-            tracing::error!("❌ Error reading from remote: {}", e);
-            return Err(e.into());
-        },
-        Err(_) => {
-            tracing::info!("✅ No immediate response (timeout), starting normal relay");
-        },
-    }
-
-    // 正常双向转发
-    tracing::info!("🔍 Starting relay_proxy");
-    let result = relay_proxy(client, remote).await;
-    match &result {
-        Ok(_) => tracing::info!("✅ relay_proxy completed successfully"),
-        Err(e) => tracing::error!("❌ relay_proxy failed: {}", e),
-    }
-    result
+    relay_proxy(client, remote).await
 }
 
 /// 带初始数据的转发（用于 CONNECT 隧道中已读取的 TLS ClientHello）
