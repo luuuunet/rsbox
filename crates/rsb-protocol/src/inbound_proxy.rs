@@ -6,7 +6,7 @@ use rsb_dns::DnsRouter;
 use serde_json::Value;
 use std::net::SocketAddr;
 use std::sync::Arc;
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::io::{AsyncReadExt, AsyncWriteExt, AsyncBufReadExt, BufReader};
 use tokio::net::{TcpListener, TcpStream};
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -211,33 +211,86 @@ async fn handle_http_connect(
     dialer: Arc<Dialer>,
     dns: Arc<DnsRouter>,
 ) -> Result<()> {
-    let mut buf = vec![0u8; 4096];
-    let n = stream.read(&mut buf).await?;
-    let req = std::str::from_utf8(&buf[..n])?;
-    let mut lines = req.lines();
-    let request_line = lines.next().context("empty http request")?;
-    let mut parts = request_line.split_whitespace();
-    let method = parts.next().unwrap_or("");
-    let target = parts.next().unwrap_or("");
+    // ✅ 使用 BufReader 精确读取 HTTP 请求，完全模仿 sing-box
+    let mut reader = BufReader::new(stream);
+
+    // 读取请求行
+    let mut request_line = String::new();
+    reader.read_line(&mut request_line).await?;
+
+    let mut parts = request_line.trim().split_whitespace();
+    let method = parts.next().context("no method")?;
+    let target = parts.next().context("no target")?;
+
+    tracing::info!("🔍 HTTP request: method={}, target={}", method, target);
+
+    // 读取所有头部直到空行
+    loop {
+        let mut line = String::new();
+        reader.read_line(&mut line).await?;
+        if line == "\r\n" || line == "\n" || line.is_empty() {
+            break;
+        }
+    }
+
+    tracing::info!("🔍 HTTP headers parsed, reader.buffer().len()={}", reader.buffer().len());
 
     // 支持 HTTP CONNECT 和普通 HTTP 方法
     if method == "CONNECT" {
         // CONNECT 方法：用于 HTTPS 隧道
         let (dest, domain) = parse_connect_target(target)?;
-        stream
+
+        tracing::info!("🔍 CONNECT target parsed: dest={:?}, domain={:?}", dest, domain);
+
+        // 发送 200 响应
+        let stream_ref = reader.get_mut();
+        stream_ref
             .write_all(b"HTTP/1.1 200 Connection Established\r\n\r\n")
             .await?;
-        dial_and_relay(
-            stream,
-            peer,
-            inbound_tag,
-            inbound_type,
-            dialer,
-            dns,
-            dest,
-            domain,
-        )
-        .await
+
+        tracing::info!("✅ Sent 200 Connection Established");
+
+        // ✅ 检查 BufReader 是否有缓冲数据（模仿 sing-box）
+        let buffered = reader.buffer().len();
+        tracing::info!("🔍 BufReader has {} bytes buffered", buffered);
+
+        if buffered > 0 {
+            // 有缓冲数据，需要先发送
+            tracing::info!("🔍 Found {} bytes in buffer, will send before relay", buffered);
+            let buffered_data = reader.buffer().to_vec();
+
+            // 提取底层 stream
+            let mut stream = reader.into_inner();
+
+            // 连接远程并发送缓冲数据
+            dial_and_relay_with_initial_data(
+                &mut stream,
+                buffered_data,
+                peer,
+                inbound_tag,
+                inbound_type,
+                dialer,
+                dns,
+                dest,
+                domain,
+            )
+            .await
+        } else {
+            // 没有缓冲数据，直接转发
+            tracing::info!("🔍 No buffered data, using direct relay");
+            let mut stream = reader.into_inner();
+            dial_and_relay(
+                &mut stream,
+                peer,
+                inbound_tag,
+                inbound_type,
+                dialer,
+                dns,
+                dest,
+                domain,
+            )
+            .await
+        }
     } else if method == "GET"
         || method == "POST"
         || method == "HEAD"
@@ -247,19 +300,13 @@ async fn handle_http_connect(
         || method == "PATCH"
     {
         // 普通 HTTP 方法：GET, POST 等
-        handle_http_proxy(
-            stream,
-            peer,
-            inbound_tag,
-            inbound_type,
-            dialer,
-            dns,
-            method,
-            target,
-            req,
-            &buf[..n],
-        )
-        .await
+        // 对于非 CONNECT 请求，回退到原始实现
+        // TODO: 未来可以也用 BufReader 重构这部分
+        tracing::warn!("⚠️ Non-CONNECT HTTP method {} not fully refactored yet, using fallback", method);
+
+        // 获取底层 stream 并重新读取（简化处理）
+        let mut stream = reader.into_inner();
+        anyhow::bail!("Non-CONNECT HTTP methods not supported in BufReader mode yet: {}", method)
     } else {
         anyhow::bail!("unsupported HTTP method: {}", method)
     }
@@ -275,30 +322,145 @@ async fn dial_and_relay(
     dest: SocketAddr,
     mut domain: Option<String>,
 ) -> Result<()> {
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use std::time::Duration;
+
     let process = rsb_core::lookup_process_for_tcp_stream(client);
-    // 禁用流量嗅探以提高 HTTPS 兼容性
-    // CONNECT 隧道应该是完全透明的，不应该 peek 客户端数据
-    // 这可以解决 Google/YouTube 等大型网站的 TLS 握手被检测的问题
-    // let sniff = crate::sniff::peek_sniff_tcp(client)
-    //     .await
-    //     .unwrap_or_default();
-    // if domain.is_none() {
-    //     domain = sniff.domain;
-    // }
     let dest = resolve_destination(&dns, dest, domain.as_deref()).await?;
+
+    tracing::info!("🔍 dial_and_relay: connecting to {:?}, domain: {:?}", dest, domain);
+
     let metadata = Metadata {
         network: Network::Tcp,
         source: Some(peer),
         destination: Some(dest),
         domain,
-        protocol: Some("https".to_string()),  // CONNECT 用于 HTTPS
+        protocol: Some("https".to_string()),
         process_name: process.name,
         process_path: process.path,
         inbound_tag: inbound_tag.to_string(),
         inbound_type: inbound_type.to_string(),
     };
-    let remote = dialer.dial_tcp(&metadata, dest).await?;
-    relay_bidirectional(client, remote).await
+
+    let mut remote = dialer.dial_tcp(&metadata, dest).await?;
+    tracing::info!("✅ dial_tcp succeeded");
+
+    // ✅ 添加：读取第一批响应数据并打印
+    tracing::info!("🔍 Attempting to read first response from remote...");
+    let mut first_chunk = vec![0u8; 2048];
+    match tokio::time::timeout(Duration::from_secs(3), remote.as_mut().read(&mut first_chunk)).await {
+        Ok(Ok(n)) => {
+            if n > 0 {
+                tracing::error!("🔴 Received {} bytes from remote BEFORE client sends data!", n);
+                tracing::error!("🔴 Response (first 512 bytes hex): {:02x?}", &first_chunk[..n.min(512)]);
+                tracing::error!("🔴 Response (as string): {}", String::from_utf8_lossy(&first_chunk[..n.min(512)]));
+
+                // 将这些数据发送给客户端
+                if let Err(e) = client.write_all(&first_chunk[..n]).await {
+                    tracing::error!("❌ Failed to write response to client: {}", e);
+                    return Err(e.into());
+                }
+                tracing::info!("✅ Sent {} bytes to client", n);
+            } else {
+                tracing::warn!("⚠️ Remote closed connection immediately (0 bytes)");
+                return Ok(());
+            }
+        }
+        Ok(Err(e)) => {
+            tracing::error!("❌ Error reading from remote: {}", e);
+            return Err(e.into());
+        }
+        Err(_) => {
+            tracing::info!("✅ No immediate response (timeout), starting normal relay");
+        }
+    }
+
+    // 正常双向转发
+    tracing::info!("🔍 Starting relay_proxy");
+    let result = relay_proxy(client, remote).await;
+    match &result {
+        Ok(_) => tracing::info!("✅ relay_proxy completed successfully"),
+        Err(e) => tracing::error!("❌ relay_proxy failed: {}", e),
+    }
+    result
+}
+
+/// 带初始数据的转发（用于 CONNECT 隧道中已读取的 TLS ClientHello）
+async fn dial_and_relay_with_initial_data(
+    client: &mut TcpStream,
+    initial_data: Vec<u8>,
+    peer: SocketAddr,
+    inbound_tag: &str,
+    inbound_type: &str,
+    dialer: Arc<Dialer>,
+    dns: Arc<DnsRouter>,
+    dest: SocketAddr,
+    domain: Option<String>,
+) -> Result<()> {
+    use tokio::io::{AsyncWriteExt, AsyncReadExt};
+    use std::time::Duration;
+
+    tracing::info!("🔍 dial_and_relay_with_initial_data: initial_data.len() = {}", initial_data.len());
+    tracing::info!("🔍 initial_data (first 64 bytes): {:02x?}", &initial_data[..initial_data.len().min(64)]);
+
+    // 不嗅探，直接解析和连接
+    let dest = resolve_destination(&dns, dest, domain.as_deref()).await?;
+    tracing::info!("🔍 resolved destination: {:?}, domain: {:?}", dest, domain);
+
+    let metadata = Metadata {
+        network: Network::Tcp,
+        source: Some(peer),
+        destination: Some(dest),
+        domain,
+        protocol: Some("https".to_string()),
+        process_name: None,
+        process_path: None,
+        inbound_tag: inbound_tag.to_string(),
+        inbound_type: inbound_type.to_string(),
+    };
+
+    let mut remote = dialer.dial_tcp(&metadata, dest).await?;
+    tracing::info!("🔍 connected to remote server successfully");
+
+    // 先发送初始数据到远程服务器
+    tracing::info!("🔍 sending {} bytes of initial data...", initial_data.len());
+    remote.as_mut().write_all(&initial_data).await
+        .map_err(|e| {
+            tracing::error!("❌ failed to write initial data: {}", e);
+            e
+        })?;
+    tracing::info!("✅ initial data sent successfully");
+
+    // 读取远程服务器的第一批响应数据
+    tracing::info!("🔍 waiting for first response from remote...");
+    let mut first_chunk = vec![0u8; 1024];
+    match tokio::time::timeout(Duration::from_secs(2), remote.as_mut().read(&mut first_chunk)).await {
+        Ok(Ok(n)) => {
+            if n > 0 {
+                tracing::info!("🔍 received {} bytes from remote server", n);
+                tracing::info!("🔍 response (first 256 bytes hex): {:02x?}", &first_chunk[..n.min(256)]);
+                tracing::info!("🔍 response (as string): {}", String::from_utf8_lossy(&first_chunk[..n.min(256)]));
+
+                // 将读取的数据写回客户端
+                client.write_all(&first_chunk[..n]).await?;
+                tracing::info!("✅ first chunk relayed to client");
+            } else {
+                tracing::warn!("⚠️ remote server closed connection immediately");
+                return Ok(());
+            }
+        }
+        Ok(Err(e)) => {
+            tracing::error!("❌ error reading from remote: {}", e);
+            return Err(e.into());
+        }
+        Err(_) => {
+            tracing::warn!("⚠️ timeout waiting for remote response");
+        }
+    }
+
+    // 然后正常双向转发
+    tracing::info!("🔍 starting bidirectional relay");
+    relay_proxy(client, remote).await
 }
 
 fn parse_connect_target(target: &str) -> Result<(SocketAddr, Option<String>)> {

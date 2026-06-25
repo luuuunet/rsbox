@@ -201,6 +201,14 @@ impl Outbound for Hysteria2Outbound {
             .await?
             .context("hy2 tcp response")?;
         tracing::debug!("hysteria2: received {} bytes response", n);
+
+        // ✅ 添加：打印响应内容用于调试
+        if n > 0 {
+            tracing::error!("🔴 Hysteria2 response content ({} bytes):", n);
+            tracing::error!("🔴 Hex (first 256 bytes): {:02x?}", &resp_buf[..n.min(256)]);
+            tracing::error!("🔴 String: {}", String::from_utf8_lossy(&resp_buf[..n.min(512)]));
+        }
+
         let mut cursor = &resp_buf[..n];
         let (ok, _) = protocol::decode_tcp_response(&mut cursor)?;
         if !ok {

@@ -17,7 +17,7 @@ pub fn detect_default_interface() -> Result<String> {
 pub fn route_add(cidr: &str, iface: &str) -> Result<()> {
     let (dest, prefix) = parse_cidr(cidr)?;
     let ifindex = if_nametoindex(iface)?;
-    let mut req = RtRequest::new(RTM_NEWROUTE, RTM_F_REPLACE);
+    let mut req = RtRequest::new(RTM_NEWROUTE, NLM_F_REPLACE | NLM_F_CREATE);
     req.set_family(match dest {
         IpAddr::V4(_) => AF_INET as u8,
         IpAddr::V6(_) => AF_INET6 as u8,
@@ -51,22 +51,34 @@ const AF_INET: i32 = 2;
 const AF_INET6: i32 = 10;
 const NETLINK_ROUTE: i32 = 0;
 const RTM_NEWROUTE: u16 = 24;
-const RTM_F_REPLACE: u32 = 0x100;
-const NLA_DST: u16 = 1;
-const NLA_OIF: u16 = 4;
+const RTM_DELROUTE: u16 = 25;
+
+// Netlink message flags (go in nlmsg_flags)
+const NLM_F_REPLACE: u16 = 0x100;
+const NLM_F_CREATE: u16 = 0x400;
+const NLM_F_EXCL: u16 = 0x200;
+
+// Route flags (go in rtm_flags)
+const RTF_UP: u32 = 0x1;
+
+// Netlink attribute types
+const RTA_DST: u16 = 1;
+const RTA_OIF: u16 = 4;
+const RTA_GATEWAY: u16 = 5;
 
 struct RtRequest {
     buf: Vec<u8>,
 }
 
 impl RtRequest {
-    fn new(kind: u16, flags: u32) -> Self {
+    fn new(kind: u16, flags: u16) -> Self {
         let mut buf = vec![0u8; libc::NLMSG_HDRLEN + libc::RTMSG_HDRLEN];
         let nl = buf.as_mut_ptr() as *mut libc::nlmsghdr;
         unsafe {
             (*nl).nlmsg_len = buf.len() as u32;
             (*nl).nlmsg_type = kind;
-            (*nl).nlmsg_flags = (libc::NLM_F_REQUEST | libc::NLM_F_ACK) as u16;
+            // Flags go in nlmsg_flags, not rtm_flags
+            (*nl).nlmsg_flags = (libc::NLM_F_REQUEST | libc::NLM_F_ACK | flags as i32) as u16;
             (*nl).nlmsg_seq = 1;
             let rt = (nl as *mut u8).add(libc::NLMSG_HDRLEN) as *mut libc::rtmsg;
             (*rt).rtm_family = AF_INET as u8;
@@ -74,7 +86,8 @@ impl RtRequest {
             (*rt).rtm_protocol = libc::RTPROT_STATIC as u8;
             (*rt).rtm_scope = libc::RT_SCOPE_UNIVERSE as u8;
             (*rt).rtm_type = libc::RTN_UNICAST as u8;
-            (*rt).rtm_flags = flags;
+            // Route flags go here (RTF_UP, etc)
+            (*rt).rtm_flags = RTF_UP;
         }
         Self { buf }
     }
@@ -97,11 +110,11 @@ impl RtRequest {
             IpAddr::V4(v4) => v4.octets().to_vec(),
             IpAddr::V6(v6) => v6.octets().to_vec(),
         };
-        self.push_attr(NLA_DST, &bytes);
+        self.push_attr(RTA_DST, &bytes);
     }
 
     fn set_oif(&mut self, ifindex: u32) {
-        self.push_attr(NLA_OIF, &ifindex.to_ne_bytes());
+        self.push_attr(RTA_OIF, &ifindex.to_ne_bytes());
     }
 
     fn push_attr(&mut self, kind: u16, payload: &[u8]) {
