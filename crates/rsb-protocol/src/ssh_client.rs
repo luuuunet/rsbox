@@ -34,7 +34,7 @@ impl SshSessionPool {
         }
     }
 
-    pub async fn dial_tcp(&self, destination: SocketAddr) -> Result<ProxyConn> {
+    pub async fn dial_tcp(&self, destination: SocketAddr, _domain: Option<&str>) -> Result<ProxyConn> {
         let mut guard = self.session.lock().await;
         if guard.is_none() {
             *guard = Some(connect(&self.config).await?);

@@ -111,7 +111,7 @@ impl Outbound for TuicOutbound {
     fn networks(&self) -> &[Network] {
         &[Network::Tcp, Network::Udp]
     }
-    async fn dial_tcp(&self, destination: SocketAddr) -> Result<ProxyConn, BoxError> {
+    async fn dial_tcp(&self, destination: SocketAddr, _domain: Option<&str>) -> Result<ProxyConn, BoxError> {
         let conn = self.connect().await?;
         let (mut send, mut recv) = conn.open_bi().await?;
         let header = build_tuic_connect(self.uuid, &self.password, destination);

@@ -41,7 +41,7 @@ impl Outbound for DnsOutbound {
     fn networks(&self) -> &[Network] {
         &[Network::Tcp, Network::Udp]
     }
-    async fn dial_tcp(&self, destination: SocketAddr) -> Result<ProxyConn, BoxError> {
+    async fn dial_tcp(&self, destination: SocketAddr, _domain: Option<&str>) -> Result<ProxyConn, BoxError> {
         let dest = self.resolve(destination).await?;
         Ok(tcp_stream(TcpStream::connect(dest).await?))
     }

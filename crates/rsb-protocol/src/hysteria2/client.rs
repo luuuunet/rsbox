@@ -142,9 +142,11 @@ async fn authenticate(connection: &quinn::Connection, password: &str, up_mbps: u
     let h3_conn = Connection::new(connection.clone());
     let (mut driver, mut send_request) = h3::client::new(h3_conn).await.context("h3 client")?;
 
-    // 在单独的任务中驱动 H3 连接 - 重要：不要 abort 这个任务！
-    tokio::spawn(async move {
-        let _ = std::future::poll_fn(|cx| driver.poll_close(cx)).await;
+    // Keep H3 driver alive - store handle to prevent premature drop
+    let driver_handle = tokio::spawn(async move {
+        if let Err(e) = std::future::poll_fn(|cx| driver.poll_close(cx)).await {
+            tracing::debug!("Hysteria2 H3 driver error: {}", e);
+        }
     });
 
     let mut req = Request::builder()
@@ -169,8 +171,10 @@ async fn authenticate(connection: &quinn::Connection, password: &str, up_mbps: u
 
     tracing::debug!("hysteria2: authentication completed");
 
-    // Let connection be held by _h3_keep_alive field
-    // Don't use mem::forget as it prevents proper cleanup
+    // Keep driver and request alive
+    std::mem::forget(driver_handle);
+    std::mem::forget(send_request);
+
     Ok(())
 }
 
@@ -185,17 +189,23 @@ impl Outbound for Hysteria2Outbound {
     fn networks(&self) -> &[Network] {
         &[Network::Tcp, Network::Udp]
     }
-    async fn dial_tcp(&self, destination: SocketAddr) -> Result<ProxyConn, BoxError> {
+    async fn dial_tcp(&self, destination: SocketAddr, domain: Option<&str>) -> Result<ProxyConn, BoxError> {
         let conn = self.get_connection().await?;
         let (mut send, mut recv) = conn.open_bi().await.context("open hy2 stream")?;
-        let target = format_address(destination);
 
-        // ✅ 测试：添加 padding（尝试不同值）
-        let padding_len = 16; // 尝试非零 padding
+        // ✅ 修复：优先使用域名，如果没有域名才使用 IP
+        let target = if let Some(domain) = domain {
+            format!("{}:{}", domain, destination.port())
+        } else {
+            format_address(destination)
+        };
+
+        let padding_len = 16;
         tracing::debug!(
-            "hysteria2: target = {}, padding_len = {}",
+            "hysteria2: target = {}, padding_len = {}, using_domain = {}",
             target,
-            padding_len
+            padding_len,
+            domain.is_some()
         );
 
         let req = protocol::encode_tcp_request(&target, padding_len);

@@ -161,7 +161,7 @@ impl Outbound for VlessOutbound {
     fn networks(&self) -> &[Network] {
         &[Network::Tcp, Network::Udp]
     }
-    async fn dial_tcp(&self, destination: SocketAddr) -> Result<ProxyConn, BoxError> {
+    async fn dial_tcp(&self, destination: SocketAddr, _domain: Option<&str>) -> Result<ProxyConn, BoxError> {
         self.connect(destination).await
     }
     async fn dial_udp(&self, destination: SocketAddr) -> Result<ProxyUdpSocket, BoxError> {

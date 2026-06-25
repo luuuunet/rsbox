@@ -259,7 +259,7 @@ impl Outbound for SelectorOutbound {
     fn networks(&self) -> &[Network] {
         &[Network::Tcp, Network::Udp]
     }
-    async fn dial_tcp(&self, destination: SocketAddr) -> Result<ProxyConn, BoxError> {
+    async fn dial_tcp(&self, destination: SocketAddr, _domain: Option<&str>) -> Result<ProxyConn, BoxError> {
         let child = self.selected_tag()?;
         self.shared.get()?.get(child)?.dial_tcp(destination).await
     }
@@ -370,7 +370,7 @@ impl Outbound for UrlTestOutbound {
     fn networks(&self) -> &[Network] {
         &[Network::Tcp, Network::Udp]
     }
-    async fn dial_tcp(&self, destination: SocketAddr) -> Result<ProxyConn, BoxError> {
+    async fn dial_tcp(&self, destination: SocketAddr, _domain: Option<&str>) -> Result<ProxyConn, BoxError> {
         if self.handle.lock().is_none() {
             self.start_probe();
         }

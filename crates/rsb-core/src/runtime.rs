@@ -77,7 +77,7 @@ impl Dialer {
         let mut result = self
             .manager
             .get(&tag)?
-            .dial_tcp(destination)
+            .dial_tcp(destination, metadata.domain.as_deref())
             .await
             .with_context(|| format!("dial via outbound `{tag}`"));
         if result.is_err() {
