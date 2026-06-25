@@ -100,6 +100,7 @@ struct VisionStream<S> {
     read_state: ReadPadState,
     filter_packets: u32,
     is_tls13: bool,
+    #[allow(dead_code)]
     write_buf: Vec<u8>,
     read_buf: Vec<u8>,
 }
