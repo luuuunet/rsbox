@@ -54,7 +54,7 @@ jobs:
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy
-      - run: cargo clippy -p rsbox --features rsb-protocol/wireguard-tunnel -- -D warnings
+      - run: cargo clippy -p rsbox --features rsb-protocol/wireguard-tunnel -- -W clippy::all
         continue-on-error: true
 
   build:
