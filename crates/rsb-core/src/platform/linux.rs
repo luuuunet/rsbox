@@ -3,6 +3,51 @@ use std::ffi::CString;
 use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::os::fd::{AsRawFd, FromRawFd};
 
+// Netlink constants not exported by libc
+const NLMSG_ALIGNTO: usize = 4;
+const NLMSG_HDRLEN: usize = 16; // sizeof(nlmsghdr)
+const RTMSG_HDRLEN: usize = 12; // sizeof(rtmsg)
+const NLA_ALIGNTO: usize = 4;
+const NLA_HDRLEN: usize = 4; // sizeof(nlattr)
+
+const AF_NETLINK: i32 = 16;
+const AF_INET: i32 = 2;
+const AF_INET6: i32 = 10;
+const NETLINK_ROUTE: i32 = 0;
+const RTM_NEWROUTE: u16 = 24;
+const RTM_DELROUTE: u16 = 25;
+
+// Netlink message flags (go in nlmsg_flags)
+const NLM_F_REPLACE: u16 = 0x100;
+const NLM_F_CREATE: u16 = 0x400;
+
+// Route flags (go in rtm_flags)
+const RTF_UP: u32 = 0x1;
+
+// Netlink attribute types
+const RTA_DST: u16 = 1;
+const RTA_OIF: u16 = 4;
+const RTA_GATEWAY: u16 = 5;
+
+#[repr(C)]
+struct rtmsg {
+    rtm_family: u8,
+    rtm_dst_len: u8,
+    rtm_src_len: u8,
+    rtm_tos: u8,
+    rtm_table: u8,
+    rtm_protocol: u8,
+    rtm_scope: u8,
+    rtm_type: u8,
+    rtm_flags: u32,
+}
+
+#[repr(C)]
+struct nlattr {
+    nla_len: u16,
+    nla_type: u16,
+}
+
 pub fn detect_default_interface() -> Result<String> {
     let text = std::fs::read_to_string("/proc/net/route").context("read /proc/net/route")?;
     for line in text.lines().skip(1) {
@@ -72,7 +117,7 @@ struct RtRequest {
 
 impl RtRequest {
     fn new(kind: u16, flags: u16) -> Self {
-        let mut buf = vec![0u8; libc::NLMSG_HDRLEN + libc::RTMSG_HDRLEN];
+        let mut buf = vec![0u8; NLMSG_HDRLEN + RTMSG_HDRLEN];
         let nl = buf.as_mut_ptr() as *mut libc::nlmsghdr;
         unsafe {
             (*nl).nlmsg_len = buf.len() as u32;
@@ -80,7 +125,7 @@ impl RtRequest {
             // Flags go in nlmsg_flags, not rtm_flags
             (*nl).nlmsg_flags = (libc::NLM_F_REQUEST | libc::NLM_F_ACK | flags as i32) as u16;
             (*nl).nlmsg_seq = 1;
-            let rt = (nl as *mut u8).add(libc::NLMSG_HDRLEN) as *mut libc::rtmsg;
+            let rt = (nl as *mut u8).add(NLMSG_HDRLEN) as *mut rtmsg;
             (*rt).rtm_family = AF_INET as u8;
             (*rt).rtm_table = libc::RT_TABLE_MAIN as u8;
             (*rt).rtm_protocol = libc::RTPROT_STATIC as u8;
@@ -95,7 +140,7 @@ impl RtRequest {
     fn set_family(&mut self, family: u8) {
         let nl = self.buf.as_mut_ptr() as *mut libc::nlmsghdr;
         unsafe {
-            let rt = (nl as *mut u8).add(libc::NLMSG_HDRLEN) as *mut libc::rtmsg;
+            let rt = (nl as *mut u8).add(NLMSG_HDRLEN) as *mut rtmsg;
             (*rt).rtm_family = family;
         }
     }
@@ -103,7 +148,7 @@ impl RtRequest {
     fn set_dst_prefix(&mut self, dest: IpAddr, prefix: u8) {
         let nl = self.buf.as_mut_ptr() as *mut libc::nlmsghdr;
         unsafe {
-            let rt = (nl as *mut u8).add(libc::NLMSG_HDRLEN) as *mut libc::rtmsg;
+            let rt = (nl as *mut u8).add(NLMSG_HDRLEN) as *mut rtmsg;
             (*rt).rtm_dst_len = prefix;
         }
         let bytes = match dest {

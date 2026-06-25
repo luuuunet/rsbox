@@ -122,7 +122,7 @@ impl WireGuardTunnel {
                             }
                         }
                         if !found {
-                            log::debug!("WireGuard: unmatched packet from {}", src);
+                            tracing::debug!("WireGuard: unmatched packet from {}", src);
                         }
                     }
                     read = async {

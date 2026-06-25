@@ -91,6 +91,7 @@ impl VmessOutbound {
             1,
             self.global_padding,
             self.authenticated_length,
+            &self.security,
         )?;
         stream.write_all(&header).await?;
         Ok(stream)
@@ -128,6 +129,7 @@ impl VmessOutbound {
                 2,
                 self.global_padding,
                 self.authenticated_length,
+                &self.security,
             )?;
             stream.write_all(&header).await?;
             return Ok(crate::udp_over_tcp::tunneled_udp(stream).await);
@@ -148,6 +150,7 @@ impl VmessOutbound {
             2,
             self.global_padding,
             self.authenticated_length,
+            &self.security,
         )?;
         stream.write_all(&header).await?;
         Ok(crate::udp_over_tcp::tunneled_udp(stream).await)
@@ -160,6 +163,7 @@ fn build_vmess_header(
     command: u8,
     global_padding: bool,
     authenticated_length: bool,
+    security: &str,
 ) -> Result<Vec<u8>> {
     use aes_gcm::aead::KeyInit;
 
@@ -186,7 +190,7 @@ fn build_vmess_header(
     let padding_len = (rand::random::<u8>() % 16) as usize;
     req.push(padding_len as u8);
     // Security type
-    let security_type = match self.security.as_str() {
+    let security_type = match security {
         "aes-128-gcm" => 3,
         "chacha20-poly1305" => 4,
         "none" => 5,
