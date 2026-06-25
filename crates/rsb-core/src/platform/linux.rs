@@ -10,13 +10,6 @@ const RTMSG_HDRLEN: usize = 12; // sizeof(rtmsg)
 const NLA_ALIGNTO: usize = 4;
 const NLA_HDRLEN: usize = 4; // sizeof(nlattr)
 
-const AF_NETLINK: i32 = 16;
-const AF_INET: i32 = 2;
-const AF_INET6: i32 = 10;
-const NETLINK_ROUTE: i32 = 0;
-const RTM_NEWROUTE: u16 = 24;
-const RTM_DELROUTE: u16 = 25;
-
 // Netlink message flags (go in nlmsg_flags)
 const NLM_F_REPLACE: u16 = 0x100;
 const NLM_F_CREATE: u16 = 0x400;
@@ -27,7 +20,6 @@ const RTF_UP: u32 = 0x1;
 // Netlink attribute types
 const RTA_DST: u16 = 1;
 const RTA_OIF: u16 = 4;
-const RTA_GATEWAY: u16 = 5;
 
 #[repr(C)]
 struct rtmsg {
@@ -185,13 +177,13 @@ impl RtRequest {
     }
 
     fn send(&self) -> Result<()> {
-        let fd = unsafe { libc::socket(AF_NETLINK, libc::SOCK_RAW, NETLINK_ROUTE) };
+        let fd = unsafe { libc::socket(libc::AF_NETLINK, libc::SOCK_RAW, libc::NETLINK_ROUTE) };
         if fd < 0 {
             anyhow::bail!("netlink socket failed");
         }
         let sock = unsafe { socket2::Socket::from_raw_fd(fd) };
         let addr = libc::sockaddr_nl {
-            nl_family: AF_NETLINK as u16,
+            nl_family: libc::AF_NETLINK as u16,
             nl_pad: Default::default(),
             nl_pid: 0,
             nl_groups: 0,

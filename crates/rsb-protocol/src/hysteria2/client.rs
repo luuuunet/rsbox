@@ -192,11 +192,36 @@ impl Outbound for Hysteria2Outbound {
         let req = protocol::encode_tcp_request(&target, 0);
         send.write_all(&req).await?;
         tracing::debug!("hysteria2: sent tcp request, waiting for response");
-        let mut resp_buf = vec![0u8; 2048]; // 增加缓冲区大小
-        let n = recv
-            .read(&mut resp_buf)
-            .await?
-            .context("hy2 tcp response")?;
+        let mut resp_buf = vec![0u8; 2048];
+
+        // ✅ 添加超时和详细错误日志
+        tracing::debug!("hysteria2: attempting to read response...");
+        let read_result = tokio::time::timeout(
+            std::time::Duration::from_secs(10),
+            recv.read(&mut resp_buf)
+        ).await;
+
+        tracing::debug!("hysteria2: read_result = {:?}", read_result.is_ok());
+
+        let n = match read_result {
+            Ok(Ok(Some(n))) => {
+                tracing::debug!("hysteria2: successfully read {} bytes", n);
+                n
+            }
+            Ok(Ok(None)) => {
+                tracing::error!("🔴 hysteria2: stream closed by server (read returned None)");
+                anyhow::bail!("hysteria2: stream closed by server");
+            }
+            Ok(Err(e)) => {
+                tracing::error!("🔴 hysteria2: read error: {}", e);
+                return Err(e.into());
+            }
+            Err(_) => {
+                tracing::error!("🔴 hysteria2: read timeout after 10 seconds");
+                anyhow::bail!("hysteria2: read timeout");
+            }
+        };
+
         tracing::debug!("hysteria2: received {} bytes response", n);
 
         // ✅ 添加：打印响应内容用于调试
