@@ -1,6 +1,6 @@
 //! TLS 1.3 client handshake completion after custom ClientHello.
 
-use aes_gcm::aead::{Aead, KeyInit, Payload};
+use aes_gcm::aead::{Aead, KeyInit};
 use aes_gcm::{Aes128Gcm, Nonce};
 use anyhow::{Context, Result};
 use sha2::{Digest, Sha256};
@@ -52,7 +52,7 @@ impl UtlsTlsStream {
         secret: StaticSecret,
         auth_key: Option<[u8; 32]>,
     ) -> Result<Self> {
-        use tokio::io::{AsyncReadExt, AsyncWriteExt};
+        use tokio::io::AsyncWriteExt;
         tcp.write_all(client_hello).await?;
         let mut transcript = client_hello.to_vec();
 

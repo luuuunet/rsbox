@@ -5,7 +5,7 @@ pub const TCP_REQUEST_ID: u64 = 0x401;
 pub const TCP_STATUS_OK: u8 = 0x00;
 pub const TCP_STATUS_ERROR: u8 = 0x01;
 
-pub fn write_varint(buf: &mut BytesMut, mut value: u64) {
+pub fn write_varint(buf: &mut BytesMut, value: u64) {
     let mut encoded = [0u8; 8];
     let len = {
         if value <= 63 {

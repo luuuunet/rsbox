@@ -13,7 +13,6 @@ use pb::{
     SelectRequest, Stats, UrlTestRequest, UrlTestResult, Version,
 };
 use std::net::SocketAddr;
-use std::sync::Arc;
 use tonic::{transport::Server, Request, Response, Status};
 
 #[derive(Clone)]

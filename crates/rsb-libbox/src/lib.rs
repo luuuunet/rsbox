@@ -139,7 +139,7 @@ pub extern "C" fn rsbox_stop() -> i32 {
         runtime,
         instance,
         mut clash,
-        mut v2ray,
+        v2ray,
         cache,
     } = state;
     runtime.block_on(async {

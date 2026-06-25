@@ -1,7 +1,7 @@
-use crate::transport::{self, address_from_socket};
+use crate::transport::{self};
 use anyhow::{Context, Result};
 use async_trait::async_trait;
-use rsb_core::{proxy_box, tcp_stream, BoxError, Network, Outbound, ProxyConn, ProxyUdpSocket};
+use rsb_core::{BoxError, Network, Outbound, ProxyConn, ProxyUdpSocket};
 use serde_json::Value;
 use std::net::SocketAddr;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};

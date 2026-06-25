@@ -53,7 +53,7 @@ impl SshSessionPool {
 }
 
 fn open_channel(session: Arc<Session>, host: &str, port: u16) -> Result<SshAsyncStream> {
-    let mut channel = session
+    let channel = session
         .channel_direct_tcpip(host, port, None)
         .context("ssh direct-tcpip")?;
     let mut stream = channel.stream(0);

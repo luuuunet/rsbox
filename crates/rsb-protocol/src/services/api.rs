@@ -86,7 +86,7 @@ impl ApiService {
         if let Some(grpc_addr) = self.grpc_listen {
             tracing::info!(tag = %self.tag, %grpc_addr, "api gRPC listening");
             let ctx = self.ctx.clone();
-            let mut grpc_shutdown = self.shutdown.subscribe();
+            let grpc_shutdown = self.shutdown.subscribe();
             let grpc_task = tokio::spawn(async move {
                 super::api_grpc::spawn_grpc(ctx, grpc_addr, grpc_shutdown).await;
             });

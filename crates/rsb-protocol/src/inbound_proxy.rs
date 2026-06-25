@@ -362,14 +362,14 @@ async fn handle_http_proxy(
     method: &str,
     target: &str,
     full_request: &str,
-    request_bytes: &[u8],
+    _request_bytes: &[u8],
 ) -> Result<()> {
     // 解析目标 URL
     let (host, port, path) = parse_http_url(target)?;
 
     // 解析目标地址
     let dest = SocketAddr::from(([0, 0, 0, 0], port));
-    let domain = Some(host.clone());
+    let _domain = Some(host.clone());
 
     // 解析 DNS
     let dest = resolve_destination(&dns, dest, Some(&host)).await?;

@@ -6,7 +6,7 @@ use anyhow::Result;
 use axum::{
     extract::{Path, State},
     http::{HeaderMap, StatusCode},
-    routing::{get, post},
+    routing::get,
     Json, Router,
 };
 use rsb_constant::TYPE_SHADOWSOCKS;

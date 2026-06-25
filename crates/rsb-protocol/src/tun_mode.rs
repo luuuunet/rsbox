@@ -152,7 +152,7 @@ async fn handle_tun_tcp(
         inbound_type: rsb_constant::TYPE_TUN.to_string(),
     };
     let remote = dialer.dial_tcp(&metadata, resolved).await?;
-    let mut local = crate::sniff::PrefixedStream::new(tcp, prefix);
+    let local = crate::sniff::PrefixedStream::new(tcp, prefix);
     relay_ipstack_tcp(local, remote).await
 }
 
@@ -359,7 +359,7 @@ async fn spawn_transparent_listener(
                                 peer
                             }
                         };
-                        let mut tcp_stream = stream;
+                        let tcp_stream = stream;
                         let _ = crate::inbound_proxy::handle_redirect_stream(
                             tcp_stream, peer, &tag, &kind, dialer, dns, dest,
                         ).await;

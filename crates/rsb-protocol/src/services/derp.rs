@@ -312,7 +312,7 @@ fn home_page(home: Option<&str>) -> Response {
 }
 
 async fn handle_derp_binary_tcp(mut stream: tokio::net::TcpStream, hub: DerpHub) -> Result<()> {
-    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::io::AsyncWriteExt;
 
     let server_key_frame = frame_server_key(&hub.server_public);
     stream

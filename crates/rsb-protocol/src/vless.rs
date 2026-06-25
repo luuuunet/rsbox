@@ -1,8 +1,8 @@
-use crate::transport::{self, address_from_socket};
+use crate::transport::{self};
 use anyhow::{Context, Result};
 use async_trait::async_trait;
 use rsb_core::{
-    proxy_box, tcp_stream, BoxError, Inbound, Network, Outbound, ProxyConn, ProxyUdpSocket,
+    BoxError, Inbound, Network, Outbound, ProxyConn, ProxyUdpSocket,
 };
 use serde_json::Value;
 use std::net::SocketAddr;

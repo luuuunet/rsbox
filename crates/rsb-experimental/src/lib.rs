@@ -260,7 +260,7 @@ impl CacheFileService {
             .and_then(|v| v.as_str())
             .unwrap_or("cache.json")
             .into();
-        let mut svc = Self {
+        let svc = Self {
             path: path.clone(),
             state: Arc::new(RwLock::new(CacheState::default())),
         };

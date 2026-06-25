@@ -1,8 +1,7 @@
-use crate::transport::address_from_socket;
 use anyhow::{Context, Result};
 use async_trait::async_trait;
 use rsb_core::{
-    proxy_box, tcp_stream, BoxError, Inbound, Network, Outbound, ProxyConn, ProxyUdpIo,
+    tcp_stream, BoxError, Inbound, Network, Outbound, ProxyConn, ProxyUdpIo,
     ProxyUdpSocket,
 };
 use serde_json::Value;

@@ -15,7 +15,7 @@ pub struct DnsOutbound {
 }
 
 impl DnsOutbound {
-    pub fn new(tag: String, raw: Value, dns: Arc<DnsRouter>) -> Result<Self> {
+    pub fn new(tag: String, _raw: Value, dns: Arc<DnsRouter>) -> Result<Self> {
         Ok(Self { tag, dns })
     }
 
