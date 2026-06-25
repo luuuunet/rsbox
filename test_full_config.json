@@ -1,0 +1,41 @@
+{
+  "log": { "level": "info" },
+  "inbounds": [
+    {
+      "type": "mixed",
+      "tag": "mixed-in",
+      "listen": "127.0.0.1",
+      "listen_port": 17890
+    },
+    {
+      "type": "http",
+      "tag": "http-in",
+      "listen": "127.0.0.1",
+      "listen_port": 17891
+    },
+    {
+      "type": "socks",
+      "tag": "socks-in",
+      "listen": "127.0.0.1",
+      "listen_port": 17892
+    }
+  ],
+  "outbounds": [
+    { "type": "direct", "tag": "direct" },
+    { "type": "block", "tag": "block" },
+    {
+      "type": "selector",
+      "tag": "proxy",
+      "outbounds": ["direct", "block"]
+    }
+  ],
+  "route": {
+    "rules": [
+      {
+        "domain": ["test.com"],
+        "outbound": "block"
+      }
+    ],
+    "final": "direct"
+  }
+}
