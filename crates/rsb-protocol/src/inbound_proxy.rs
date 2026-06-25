@@ -6,7 +6,7 @@ use rsb_dns::DnsRouter;
 use serde_json::Value;
 use std::net::SocketAddr;
 use std::sync::Arc;
-use tokio::io::{AsyncReadExt, AsyncWriteExt, AsyncBufReadExt, BufReader};
+use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::net::{TcpListener, TcpStream};
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -233,14 +233,21 @@ async fn handle_http_connect(
         }
     }
 
-    tracing::info!("🔍 HTTP headers parsed, reader.buffer().len()={}", reader.buffer().len());
+    tracing::info!(
+        "🔍 HTTP headers parsed, reader.buffer().len()={}",
+        reader.buffer().len()
+    );
 
     // 支持 HTTP CONNECT 和普通 HTTP 方法
     if method == "CONNECT" {
         // CONNECT 方法：用于 HTTPS 隧道
         let (dest, domain) = parse_connect_target(target)?;
 
-        tracing::info!("🔍 CONNECT target parsed: dest={:?}, domain={:?}", dest, domain);
+        tracing::info!(
+            "🔍 CONNECT target parsed: dest={:?}, domain={:?}",
+            dest,
+            domain
+        );
 
         // 发送 200 响应
         let stream_ref = reader.get_mut();
@@ -256,7 +263,10 @@ async fn handle_http_connect(
 
         if buffered > 0 {
             // 有缓冲数据，需要先发送
-            tracing::info!("🔍 Found {} bytes in buffer, will send before relay", buffered);
+            tracing::info!(
+                "🔍 Found {} bytes in buffer, will send before relay",
+                buffered
+            );
             let buffered_data = reader.buffer().to_vec();
 
             // 提取底层 stream
@@ -302,11 +312,17 @@ async fn handle_http_connect(
         // 普通 HTTP 方法：GET, POST 等
         // 对于非 CONNECT 请求，回退到原始实现
         // TODO: 未来可以也用 BufReader 重构这部分
-        tracing::warn!("⚠️ Non-CONNECT HTTP method {} not fully refactored yet, using fallback", method);
+        tracing::warn!(
+            "⚠️ Non-CONNECT HTTP method {} not fully refactored yet, using fallback",
+            method
+        );
 
         // 获取底层 stream 并重新读取（简化处理）
         let mut stream = reader.into_inner();
-        anyhow::bail!("Non-CONNECT HTTP methods not supported in BufReader mode yet: {}", method)
+        anyhow::bail!(
+            "Non-CONNECT HTTP methods not supported in BufReader mode yet: {}",
+            method
+        )
     } else {
         anyhow::bail!("unsupported HTTP method: {}", method)
     }
@@ -322,13 +338,17 @@ async fn dial_and_relay(
     dest: SocketAddr,
     mut domain: Option<String>,
 ) -> Result<()> {
-    use tokio::io::{AsyncReadExt, AsyncWriteExt};
     use std::time::Duration;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
     let process = rsb_core::lookup_process_for_tcp_stream(client);
     let dest = resolve_destination(&dns, dest, domain.as_deref()).await?;
 
-    tracing::info!("🔍 dial_and_relay: connecting to {:?}, domain: {:?}", dest, domain);
+    tracing::info!(
+        "🔍 dial_and_relay: connecting to {:?}, domain: {:?}",
+        dest,
+        domain
+    );
 
     let metadata = Metadata {
         network: Network::Tcp,
@@ -348,12 +368,26 @@ async fn dial_and_relay(
     // ✅ 添加：读取第一批响应数据并打印
     tracing::info!("🔍 Attempting to read first response from remote...");
     let mut first_chunk = vec![0u8; 2048];
-    match tokio::time::timeout(Duration::from_secs(3), remote.as_mut().read(&mut first_chunk)).await {
+    match tokio::time::timeout(
+        Duration::from_secs(3),
+        remote.as_mut().read(&mut first_chunk),
+    )
+    .await
+    {
         Ok(Ok(n)) => {
             if n > 0 {
-                tracing::error!("🔴 Received {} bytes from remote BEFORE client sends data!", n);
-                tracing::error!("🔴 Response (first 512 bytes hex): {:02x?}", &first_chunk[..n.min(512)]);
-                tracing::error!("🔴 Response (as string): {}", String::from_utf8_lossy(&first_chunk[..n.min(512)]));
+                tracing::error!(
+                    "🔴 Received {} bytes from remote BEFORE client sends data!",
+                    n
+                );
+                tracing::error!(
+                    "🔴 Response (first 512 bytes hex): {:02x?}",
+                    &first_chunk[..n.min(512)]
+                );
+                tracing::error!(
+                    "🔴 Response (as string): {}",
+                    String::from_utf8_lossy(&first_chunk[..n.min(512)])
+                );
 
                 // 将这些数据发送给客户端
                 if let Err(e) = client.write_all(&first_chunk[..n]).await {
@@ -365,14 +399,14 @@ async fn dial_and_relay(
                 tracing::warn!("⚠️ Remote closed connection immediately (0 bytes)");
                 return Ok(());
             }
-        }
+        },
         Ok(Err(e)) => {
             tracing::error!("❌ Error reading from remote: {}", e);
             return Err(e.into());
-        }
+        },
         Err(_) => {
             tracing::info!("✅ No immediate response (timeout), starting normal relay");
-        }
+        },
     }
 
     // 正常双向转发
@@ -397,11 +431,17 @@ async fn dial_and_relay_with_initial_data(
     dest: SocketAddr,
     domain: Option<String>,
 ) -> Result<()> {
-    use tokio::io::{AsyncWriteExt, AsyncReadExt};
     use std::time::Duration;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
-    tracing::info!("🔍 dial_and_relay_with_initial_data: initial_data.len() = {}", initial_data.len());
-    tracing::info!("🔍 initial_data (first 64 bytes): {:02x?}", &initial_data[..initial_data.len().min(64)]);
+    tracing::info!(
+        "🔍 dial_and_relay_with_initial_data: initial_data.len() = {}",
+        initial_data.len()
+    );
+    tracing::info!(
+        "🔍 initial_data (first 64 bytes): {:02x?}",
+        &initial_data[..initial_data.len().min(64)]
+    );
 
     // 不嗅探，直接解析和连接
     let dest = resolve_destination(&dns, dest, domain.as_deref()).await?;
@@ -424,7 +464,10 @@ async fn dial_and_relay_with_initial_data(
 
     // 先发送初始数据到远程服务器
     tracing::info!("🔍 sending {} bytes of initial data...", initial_data.len());
-    remote.as_mut().write_all(&initial_data).await
+    remote
+        .as_mut()
+        .write_all(&initial_data)
+        .await
         .map_err(|e| {
             tracing::error!("❌ failed to write initial data: {}", e);
             e
@@ -434,12 +477,23 @@ async fn dial_and_relay_with_initial_data(
     // 读取远程服务器的第一批响应数据
     tracing::info!("🔍 waiting for first response from remote...");
     let mut first_chunk = vec![0u8; 1024];
-    match tokio::time::timeout(Duration::from_secs(2), remote.as_mut().read(&mut first_chunk)).await {
+    match tokio::time::timeout(
+        Duration::from_secs(2),
+        remote.as_mut().read(&mut first_chunk),
+    )
+    .await
+    {
         Ok(Ok(n)) => {
             if n > 0 {
                 tracing::info!("🔍 received {} bytes from remote server", n);
-                tracing::info!("🔍 response (first 256 bytes hex): {:02x?}", &first_chunk[..n.min(256)]);
-                tracing::info!("🔍 response (as string): {}", String::from_utf8_lossy(&first_chunk[..n.min(256)]));
+                tracing::info!(
+                    "🔍 response (first 256 bytes hex): {:02x?}",
+                    &first_chunk[..n.min(256)]
+                );
+                tracing::info!(
+                    "🔍 response (as string): {}",
+                    String::from_utf8_lossy(&first_chunk[..n.min(256)])
+                );
 
                 // 将读取的数据写回客户端
                 client.write_all(&first_chunk[..n]).await?;
@@ -448,14 +502,14 @@ async fn dial_and_relay_with_initial_data(
                 tracing::warn!("⚠️ remote server closed connection immediately");
                 return Ok(());
             }
-        }
+        },
         Ok(Err(e)) => {
             tracing::error!("❌ error reading from remote: {}", e);
             return Err(e.into());
-        }
+        },
         Err(_) => {
             tracing::warn!("⚠️ timeout waiting for remote response");
-        }
+        },
     }
 
     // 然后正常双向转发
