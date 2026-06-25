@@ -7,7 +7,7 @@ members = [
     "crates/rsb-protocol",
     "crates/rsb-route",
     "crates/rsb-dns",
-    "crates/rsb-experimental",
+    "crates/rsb-api",
     "crates/rsb-libbox",
     "crates/rsb-wireguard",
     "rsbox",
@@ -87,7 +87,7 @@ rsb-core = { path = "crates/rsb-core" }
 rsb-protocol = { path = "crates/rsb-protocol" }
 rsb-route = { path = "crates/rsb-route" }
 rsb-dns = { path = "crates/rsb-dns" }
-rsb-experimental = { path = "crates/rsb-experimental" }
+rsb-api = { path = "crates/rsb-api" }
 rsb-wireguard = { path = "crates/rsb-wireguard" }
 rsb-libbox = { path = "crates/rsb-libbox" }
 

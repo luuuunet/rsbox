@@ -1,7 +1,7 @@
 //! C ABI for embedding rsbox (libbox-compatible subset).
 
 use rsb_constant::VERSION;
-use rsb_experimental::{CacheFileService, ClashApiServer, V2RayApiServer};
+use rsb_api::{CacheFileService, ClashApiServer, V2RayApiServer};
 use rsb_protocol::RsBox;
 use std::ffi::{c_char, CStr};
 use std::sync::Mutex;
