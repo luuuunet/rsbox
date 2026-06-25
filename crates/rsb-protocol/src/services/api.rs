@@ -126,7 +126,11 @@ fn parse_grpc_listen(raw: &Value) -> Option<SocketAddr> {
 }
 
 fn auth(headers: &HeaderMap, users: &[(String, String)]) -> bool {
-    users.is_empty() || auth_token(headers, users).is_some()
+    if users.is_empty() {
+        tracing::warn!("HTTP API: No users configured - authentication disabled. This is insecure if not binding to loopback!");
+        return true;
+    }
+    auth_token(headers, users).is_some()
 }
 
 async fn status(

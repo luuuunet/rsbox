@@ -188,6 +188,8 @@ impl RtRequest {
             nl_pid: 0,
             nl_groups: 0,
         };
+
+        // Send request
         let ret = unsafe {
             libc::send(
                 sock.as_raw_fd(),
@@ -199,6 +201,35 @@ impl RtRequest {
         if ret < 0 {
             anyhow::bail!("netlink send failed");
         }
+
+        // Read ACK
+        let mut recv_buf = vec![0u8; 4096];
+        let recv_len = unsafe {
+            libc::recv(
+                sock.as_raw_fd(),
+                recv_buf.as_mut_ptr() as *mut _,
+                recv_buf.len(),
+                0,
+            )
+        };
+        if recv_len < 0 {
+            anyhow::bail!("netlink recv failed");
+        }
+
+        // Parse NLMSG_ERROR
+        if recv_len >= NLMSG_HDRLEN as isize {
+            let nl = recv_buf.as_ptr() as *const libc::nlmsghdr;
+            unsafe {
+                if (*nl).nlmsg_type == libc::NLMSG_ERROR as u16 {
+                    let err = (nl as *const u8).add(NLMSG_HDRLEN) as *const libc::nlmsgerr;
+                    let error_code = (*err).error;
+                    if error_code != 0 {
+                        anyhow::bail!("netlink error: {}", std::io::Error::from_raw_os_error(-error_code));
+                    }
+                }
+            }
+        }
+
         Ok(())
     }
 }

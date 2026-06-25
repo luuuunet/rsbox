@@ -241,24 +241,34 @@ impl RouteMsg {
     }
 
     fn add_request(dest: IpAddr, prefix: u8, ifindex: u32) -> Self {
-        let mut bytes = vec![0u8; libc::RTM_HDRLEN + 64];
+        let mut bytes = vec![0u8; libc::RTM_HDRLEN + 128];
         let hdr = bytes.as_mut_ptr() as *mut libc::rt_msghdr;
         unsafe {
             (*hdr).rtm_msglen = bytes.len() as u16;
             (*hdr).rtm_version = libc::RTM_VERSION as u8;
             (*hdr).rtm_type = libc::RTM_ADD as u8;
             (*hdr).rtm_flags = libc::RTF_UP | libc::RTF_STATIC;
-            (*hdr).rtm_addrs = (libc::RTA_DST | libc::RTA_IFP) as i32;
+            (*hdr).rtm_addrs = (libc::RTA_DST | libc::RTA_NETMASK | libc::RTA_IFP) as i32;
             (*hdr).rtm_pid = libc::getpid();
             (*hdr).rtm_seq = 1;
             (*hdr).rtm_index = ifindex as u16;
         }
+
+        // Add destination
         match dest {
             IpAddr::V4(v4) => append_sockaddr_in(&mut bytes, v4),
             IpAddr::V6(v6) => append_sockaddr_in6(&mut bytes, v6),
         }
+
+        // Add netmask (CIDR prefix)
+        match dest {
+            IpAddr::V4(_) => append_netmask_v4(&mut bytes, prefix),
+            IpAddr::V6(_) => append_netmask_v6(&mut bytes, prefix),
+        }
+
+        // Add interface
         append_sockaddr_dl(&mut bytes, ifindex);
-        let _ = prefix;
+
         Self { bytes }
     }
 
@@ -314,6 +324,54 @@ fn append_sockaddr_dl(buf: &mut Vec<u8>, ifindex: u32) {
         std::slice::from_raw_parts(
             &sa as *const _ as *const u8,
             mem::size_of::<libc::sockaddr_dl>(),
+        )
+    };
+    buf.extend_from_slice(bytes);
+}
+
+fn append_netmask_v4(buf: &mut Vec<u8>, prefix: u8) {
+    let mut sa: libc::sockaddr_in = unsafe { mem::zeroed() };
+    sa.sin_len = mem::size_of::<libc::sockaddr_in>() as u8;
+    sa.sin_family = libc::AF_INET as u8;
+    // Calculate netmask from prefix
+    let mask = if prefix == 0 {
+        0u32
+    } else if prefix >= 32 {
+        !0u32
+    } else {
+        !0u32 << (32 - prefix)
+    };
+    sa.sin_addr = libc::in_addr {
+        s_addr: mask.to_be(),
+    };
+    let bytes = unsafe {
+        std::slice::from_raw_parts(
+            &sa as *const _ as *const u8,
+            mem::size_of::<libc::sockaddr_in>(),
+        )
+    };
+    buf.extend_from_slice(bytes);
+}
+
+fn append_netmask_v6(buf: &mut Vec<u8>, prefix: u8) {
+    let mut sa: libc::sockaddr_in6 = unsafe { mem::zeroed() };
+    sa.sin6_len = mem::size_of::<libc::sockaddr_in6>() as u8;
+    sa.sin6_family = libc::AF_INET6 as u8;
+    // Calculate IPv6 netmask from prefix
+    let mut mask = [0u8; 16];
+    let full_bytes = (prefix / 8) as usize;
+    let remaining_bits = prefix % 8;
+    for i in 0..full_bytes.min(16) {
+        mask[i] = 0xff;
+    }
+    if full_bytes < 16 && remaining_bits > 0 {
+        mask[full_bytes] = !0u8 << (8 - remaining_bits);
+    }
+    sa.sin6_addr = libc::in6_addr { s6_addr: mask };
+    let bytes = unsafe {
+        std::slice::from_raw_parts(
+            &sa as *const _ as *const u8,
+            mem::size_of::<libc::sockaddr_in6>(),
         )
     };
     buf.extend_from_slice(bytes);
