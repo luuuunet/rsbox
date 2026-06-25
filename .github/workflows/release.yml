@@ -55,6 +55,7 @@ jobs:
             - **Windows**: `rsbox-*-windows-*.zip`
             - **Linux**: `rsbox-*-linux-*.tar.gz`
             - **macOS**: `rsbox-*-macos-*.tar.gz`
+            - **Android**: `rsbox-*-android-*.tar.gz` (需要 Termux 或 Root)
 
             ### 使用方法
             ```bash
@@ -116,6 +117,19 @@ jobs:
           - target: aarch64-apple-darwin
             os: macos-latest
             name: macos-aarch64
+
+          # Android
+          - target: aarch64-linux-android
+            os: ubuntu-latest
+            name: android-aarch64
+
+          - target: armv7-linux-androideabi
+            os: ubuntu-latest
+            name: android-armv7
+
+          - target: x86_64-linux-android
+            os: ubuntu-latest
+            name: android-x86_64
 
     steps:
       - name: Checkout code
