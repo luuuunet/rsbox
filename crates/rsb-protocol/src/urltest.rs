@@ -16,7 +16,7 @@ pub async fn probe_latency(ob: &dyn Outbound, url: &str) -> Result<Duration> {
     let req = format!(
         "GET {path} HTTP/1.1\r\nHost: {host}\r\nConnection: close\r\nUser-Agent: rsbox-urltest/1.0\r\n\r\n"
     );
-    let mut stream = ob.dial_tcp(addr).await?;
+    let mut stream = ob.dial_tcp(addr, None).await?;
     stream.write_all(req.as_bytes()).await?;
     let mut buf = [0u8; 512];
     let n = stream.read(&mut buf).await.unwrap_or(0);

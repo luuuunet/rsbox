@@ -1,23 +1,18 @@
 use anyhow::{Context, Result};
 use std::ffi::CString;
-use std::net::{IpAddr, Ipv4Addr, SocketAddr};
+use std::net::IpAddr;
 use std::os::fd::{AsRawFd, FromRawFd};
 
-// Netlink constants not exported by libc
-const NLMSG_ALIGNTO: usize = 4;
-const NLMSG_HDRLEN: usize = 16; // sizeof(nlmsghdr)
-const RTMSG_HDRLEN: usize = 12; // sizeof(rtmsg)
-const NLA_ALIGNTO: usize = 4;
-const NLA_HDRLEN: usize = 4; // sizeof(nlattr)
+// Netlink constants/types not exported by libc
+const NLMSG_HDRLEN: usize = 16;
+const RTMSG_HDRLEN: usize = 12;
+const NLA_HDRLEN: usize = 4;
 
-// Netlink message flags (go in nlmsg_flags)
 const NLM_F_REPLACE: u16 = 0x100;
 const NLM_F_CREATE: u16 = 0x400;
 
-// Route flags (go in rtm_flags)
 const RTF_UP: u32 = 0x1;
 
-// Netlink attribute types
 const RTA_DST: u16 = 1;
 const RTA_OIF: u16 = 4;
 
@@ -54,10 +49,10 @@ pub fn detect_default_interface() -> Result<String> {
 pub fn route_add(cidr: &str, iface: &str) -> Result<()> {
     let (dest, prefix) = parse_cidr(cidr)?;
     let ifindex = if_nametoindex(iface)?;
-    let mut req = RtRequest::new(RTM_NEWROUTE, NLM_F_REPLACE | NLM_F_CREATE);
+    let mut req = RtRequest::new(libc::RTM_NEWROUTE as u16, NLM_F_REPLACE | NLM_F_CREATE);
     req.set_family(match dest {
-        IpAddr::V4(_) => AF_INET as u8,
-        IpAddr::V6(_) => AF_INET6 as u8,
+        IpAddr::V4(_) => libc::AF_INET as u8,
+        IpAddr::V6(_) => libc::AF_INET6 as u8,
     });
     req.set_dst_prefix(dest, prefix);
     req.set_oif(ifindex);
@@ -83,26 +78,6 @@ fn parse_cidr(cidr: &str) -> Result<(IpAddr, u8)> {
     Ok((cidr.parse().context("cidr ip")?, 32))
 }
 
-const AF_NETLINK: i32 = 16;
-const AF_INET: i32 = 2;
-const AF_INET6: i32 = 10;
-const NETLINK_ROUTE: i32 = 0;
-const RTM_NEWROUTE: u16 = 24;
-const RTM_DELROUTE: u16 = 25;
-
-// Netlink message flags (go in nlmsg_flags)
-const NLM_F_REPLACE: u16 = 0x100;
-const NLM_F_CREATE: u16 = 0x400;
-const NLM_F_EXCL: u16 = 0x200;
-
-// Route flags (go in rtm_flags)
-const RTF_UP: u32 = 0x1;
-
-// Netlink attribute types
-const RTA_DST: u16 = 1;
-const RTA_OIF: u16 = 4;
-const RTA_GATEWAY: u16 = 5;
-
 struct RtRequest {
     buf: Vec<u8>,
 }
@@ -114,16 +89,14 @@ impl RtRequest {
         unsafe {
             (*nl).nlmsg_len = buf.len() as u32;
             (*nl).nlmsg_type = kind;
-            // Flags go in nlmsg_flags, not rtm_flags
             (*nl).nlmsg_flags = (libc::NLM_F_REQUEST | libc::NLM_F_ACK | flags as i32) as u16;
             (*nl).nlmsg_seq = 1;
             let rt = (nl as *mut u8).add(NLMSG_HDRLEN) as *mut rtmsg;
-            (*rt).rtm_family = AF_INET as u8;
+            (*rt).rtm_family = libc::AF_INET as u8;
             (*rt).rtm_table = libc::RT_TABLE_MAIN as u8;
             (*rt).rtm_protocol = libc::RTPROT_STATIC as u8;
             (*rt).rtm_scope = libc::RT_SCOPE_UNIVERSE as u8;
             (*rt).rtm_type = libc::RTN_UNICAST as u8;
-            // Route flags go here (RTF_UP, etc)
             (*rt).rtm_flags = RTF_UP;
         }
         Self { buf }
@@ -155,18 +128,18 @@ impl RtRequest {
     }
 
     fn push_attr(&mut self, kind: u16, payload: &[u8]) {
-        let len = libc::NLA_HDRLEN + payload.len();
+        let len = NLA_HDRLEN + payload.len();
         let pad = (4 - (len % 4)) % 4;
         let total = len + pad;
         let start = self.buf.len();
         self.buf.resize(start + total, 0);
-        let attr = self.buf[start..].as_mut_ptr() as *mut libc::nlattr;
+        let attr = self.buf[start..].as_mut_ptr() as *mut nlattr;
         unsafe {
-            (*attr).nla_len = (libc::NLA_HDRLEN + payload.len()) as u16;
+            (*attr).nla_len = (NLA_HDRLEN + payload.len()) as u16;
             (*attr).nla_type = kind;
             std::ptr::copy_nonoverlapping(
                 payload.as_ptr(),
-                (attr as *mut u8).add(libc::NLA_HDRLEN),
+                (attr as *mut u8).add(NLA_HDRLEN),
                 payload.len(),
             );
         }
@@ -182,14 +155,13 @@ impl RtRequest {
             anyhow::bail!("netlink socket failed");
         }
         let sock = unsafe { socket2::Socket::from_raw_fd(fd) };
-        let addr = libc::sockaddr_nl {
+        let _addr = libc::sockaddr_nl {
             nl_family: libc::AF_NETLINK as u16,
             nl_pad: Default::default(),
             nl_pid: 0,
             nl_groups: 0,
         };
 
-        // Send request
         let ret = unsafe {
             libc::send(
                 sock.as_raw_fd(),
@@ -202,7 +174,6 @@ impl RtRequest {
             anyhow::bail!("netlink send failed");
         }
 
-        // Read ACK
         let mut recv_buf = vec![0u8; 4096];
         let recv_len = unsafe {
             libc::recv(
@@ -216,7 +187,6 @@ impl RtRequest {
             anyhow::bail!("netlink recv failed");
         }
 
-        // Parse NLMSG_ERROR
         if recv_len >= NLMSG_HDRLEN as isize {
             let nl = recv_buf.as_ptr() as *const libc::nlmsghdr;
             unsafe {

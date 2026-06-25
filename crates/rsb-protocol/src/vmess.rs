@@ -4,6 +4,7 @@ use async_trait::async_trait;
 use rsb_core::{BoxError, Inbound, Network, Outbound, ProxyConn, ProxyUdpSocket};
 use serde_json::Value;
 use std::net::SocketAddr;
+use tokio::io::AsyncWriteExt;
 use tokio::net::{TcpListener, TcpStream};
 use uuid::Uuid;
 
@@ -367,7 +368,7 @@ impl Inbound for VmessInbound {
 async fn serve_vmess(stream: TcpStream, users: Vec<Uuid>) -> Result<()> {
     use aes_gcm::aead::{Aead, KeyInit};
     use aes_gcm::{Aes128Gcm, Nonce};
-    use tokio::io::AsyncReadExt;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
     let mut io = stream;
     let mut buf = vec![0u8; 4096];
     let n = io.read(&mut buf).await?;

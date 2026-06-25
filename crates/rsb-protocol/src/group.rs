@@ -261,7 +261,7 @@ impl Outbound for SelectorOutbound {
     }
     async fn dial_tcp(&self, destination: SocketAddr, _domain: Option<&str>) -> Result<ProxyConn, BoxError> {
         let child = self.selected_tag()?;
-        self.shared.get()?.get(child)?.dial_tcp(destination).await
+        self.shared.get()?.get(child)?.dial_tcp(destination, None).await
     }
     async fn dial_udp(&self, destination: SocketAddr) -> Result<ProxyUdpSocket, BoxError> {
         let child = self.selected_tag()?;
@@ -375,7 +375,7 @@ impl Outbound for UrlTestOutbound {
             self.start_probe();
         }
         let child = self.selected_tag()?;
-        self.shared.get()?.get(child)?.dial_tcp(destination).await
+        self.shared.get()?.get(child)?.dial_tcp(destination, None).await
     }
     async fn dial_udp(&self, destination: SocketAddr) -> Result<ProxyUdpSocket, BoxError> {
         let child = self.selected_tag()?;

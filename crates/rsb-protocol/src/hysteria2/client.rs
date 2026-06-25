@@ -144,9 +144,7 @@ async fn authenticate(connection: &quinn::Connection, password: &str, up_mbps: u
 
     // Keep H3 driver alive - store handle to prevent premature drop
     let driver_handle = tokio::spawn(async move {
-        if let Err(e) = std::future::poll_fn(|cx| driver.poll_close(cx)).await {
-            tracing::debug!("Hysteria2 H3 driver error: {}", e);
-        }
+        let _ = std::future::poll_fn(|cx| driver.poll_close(cx)).await;
     });
 
     let mut req = Request::builder()

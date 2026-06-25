@@ -14,17 +14,10 @@ jobs = 8
 [target.x86_64-pc-windows-msvc]
 rustflags = ["-C", "target-feature=+crt-static"]
 
-# 通用优化标志
-[target.'cfg(all())']
-rustflags = [
-    "-C", "target-cpu=native",  # 针对当前 CPU 优化（本地构建）
-]
-
-# 发布构建优化（取消注释使用）
-# [profile.release]
-# rustflags = [
-#     "-C", "target-cpu=x86-64-v3",  # 兼容性更好的 CPU 目标
-# ]
+# 本地开发可选：针对当前 CPU 优化（勿提交 target-cpu=native 到 CI，
+# 会导致 macOS 上 ring 0.17.14 编译失败）
+# [target.'cfg(all())']
+# rustflags = ["-C", "target-cpu=native"]
 
 [term]
 # 彩色输出

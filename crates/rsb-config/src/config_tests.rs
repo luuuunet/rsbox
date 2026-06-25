@@ -1,6 +1,7 @@
 #[cfg(test)]
 mod tests {
-    use super::*;
+    use crate::Options;
+    use rsb_constant as c;
 
     #[test]
     fn test_basic_config_parse() {
@@ -122,8 +123,6 @@ mod tests {
 
     #[test]
     fn test_protocol_types() {
-        // 测试协议类型常量
-        use crate::c;
         assert_eq!(c::TYPE_MIXED, "mixed");
         assert_eq!(c::TYPE_HTTP, "http");
         assert_eq!(c::TYPE_SOCKS, "socks");

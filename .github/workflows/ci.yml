@@ -9,6 +9,8 @@ on:
 env:
   CARGO_TERM_COLOR: always
   RUST_BACKTRACE: 1
+  # Prevent target-cpu=native from breaking ring on macOS CI runners
+  RUSTFLAGS: ""
 
 jobs:
   test:

@@ -64,7 +64,7 @@ impl Outbound for BlockOutbound {
     fn networks(&self) -> &[Network] {
         &[Network::Tcp, Network::Udp]
     }
-    async fn dial_tcp(&self, _destination: SocketAddr) -> Result<ProxyConn, BoxError> {
+    async fn dial_tcp(&self, _destination: SocketAddr, _domain: Option<&str>) -> Result<ProxyConn, BoxError> {
         anyhow::bail!("connection blocked by outbound `{}`", self.tag)
     }
     async fn dial_udp(&self, _destination: SocketAddr) -> Result<ProxyUdpSocket, BoxError> {
