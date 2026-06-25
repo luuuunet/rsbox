@@ -191,6 +191,7 @@ where
     cursor = &cursor[2 + consumed..];
     let _status = meta[3];
     if meta[2] == STATUS_NEW && cursor.len() >= 8 {
+        let _reserved = &cursor[..8]; // 读取但不使用
         cursor = &cursor[8..];
     }
     let mut plen_buf = [0u8; 2];

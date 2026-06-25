@@ -26,6 +26,8 @@ pub struct Hysteria2Outbound {
     insecure: bool,
     obfs: Option<Arc<obfs::Salamander>>,
     connection: tokio::sync::Mutex<Option<Arc<quinn::Connection>>>,
+    // 保持 H3 driver 和 send_request 活着，防止连接关闭
+    _h3_keep_alive: tokio::sync::Mutex<Option<(tokio::task::JoinHandle<()>, Box<dyn std::any::Any + Send>)>>,
 }
 
 impl Hysteria2Outbound {
@@ -64,6 +66,7 @@ impl Hysteria2Outbound {
                 .unwrap_or(false),
             obfs,
             connection: tokio::sync::Mutex::new(None),
+            _h3_keep_alive: tokio::sync::Mutex::new(None),
         })
     }
 
@@ -137,9 +140,12 @@ async fn connect_and_auth(ob: &Hysteria2Outbound) -> Result<quinn::Connection> {
 async fn authenticate(connection: &quinn::Connection, password: &str, up_mbps: u32) -> Result<()> {
     let h3_conn = Connection::new(connection.clone());
     let (mut driver, mut send_request) = h3::client::new(h3_conn).await.context("h3 client")?;
+
+    // 在单独的任务中驱动 H3 连接 - 重要：不要 abort 这个任务！
     tokio::spawn(async move {
         let _ = std::future::poll_fn(|cx| driver.poll_close(cx)).await;
     });
+
     let mut req = Request::builder()
         .method("POST")
         .uri("https://hysteria/auth")
@@ -153,9 +159,20 @@ async fn authenticate(connection: &quinn::Connection, password: &str, up_mbps: u
     let mut stream = send_request.send_request(req.body(())?).await?;
     stream.finish().await?;
     let resp = stream.recv_response().await?;
+
+    tracing::debug!("hysteria2: auth response status = {}", resp.status());
+
     if resp.status() != StatusCode::from_u16(233).unwrap() {
         anyhow::bail!("hysteria2 auth failed: {}", resp.status());
     }
+
+    // 关键修复：不要 drop stream 和 send_request
+    // 使用 std::mem::forget 防止它们被 drop
+    std::mem::forget(stream);
+    std::mem::forget(send_request);
+
+    tracing::debug!("hysteria2: authentication completed, kept H3 objects alive");
+
     Ok(())
 }
 
@@ -176,11 +193,13 @@ impl Outbound for Hysteria2Outbound {
         let target = format_address(destination);
         let req = protocol::encode_tcp_request(&target, 0);
         send.write_all(&req).await?;
-        let mut resp_buf = vec![0u8; 512];
+        tracing::debug!("hysteria2: sent tcp request, waiting for response");
+        let mut resp_buf = vec![0u8; 2048]; // 增加缓冲区大小
         let n = recv
             .read(&mut resp_buf)
             .await?
             .context("hy2 tcp response")?;
+        tracing::debug!("hysteria2: received {} bytes response", n);
         let mut cursor = &resp_buf[..n];
         let (ok, _) = protocol::decode_tcp_response(&mut cursor)?;
         if !ok {

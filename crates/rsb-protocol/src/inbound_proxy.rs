@@ -219,24 +219,31 @@ async fn handle_http_connect(
     let mut parts = request_line.split_whitespace();
     let method = parts.next().unwrap_or("");
     let target = parts.next().unwrap_or("");
-    if method != "CONNECT" {
-        anyhow::bail!("only HTTP CONNECT supported in http inbound");
+
+    // 支持 HTTP CONNECT 和普通 HTTP 方法
+    if method == "CONNECT" {
+        // CONNECT 方法：用于 HTTPS 隧道
+        let (dest, domain) = parse_connect_target(target)?;
+        stream
+            .write_all(b"HTTP/1.1 200 Connection Established\r\n\r\n")
+            .await?;
+        dial_and_relay(
+            stream,
+            peer,
+            inbound_tag,
+            inbound_type,
+            dialer,
+            dns,
+            dest,
+            domain,
+        )
+        .await
+    } else if method == "GET" || method == "POST" || method == "HEAD" || method == "PUT" || method == "DELETE" || method == "OPTIONS" || method == "PATCH" {
+        // 普通 HTTP 方法：GET, POST 等
+        handle_http_proxy(stream, peer, inbound_tag, inbound_type, dialer, dns, method, target, req, &buf[..n]).await
+    } else {
+        anyhow::bail!("unsupported HTTP method: {}", method)
     }
-    let (dest, domain) = parse_connect_target(target)?;
-    stream
-        .write_all(b"HTTP/1.1 200 Connection Established\r\n\r\n")
-        .await?;
-    dial_and_relay(
-        stream,
-        peer,
-        inbound_tag,
-        inbound_type,
-        dialer,
-        dns,
-        dest,
-        domain,
-    )
-    .await
 }
 
 async fn dial_and_relay(
@@ -343,4 +350,145 @@ pub async fn handle_redirect_stream(
         None,
     )
     .await
+}
+// 在 inbound_proxy.rs 末尾添加这个新函数
+async fn handle_http_proxy(
+    client: &mut TcpStream,
+    peer: SocketAddr,
+    inbound_tag: &str,
+    inbound_type: &str,
+    dialer: Arc<Dialer>,
+    dns: Arc<DnsRouter>,
+    method: &str,
+    target: &str,
+    full_request: &str,
+    request_bytes: &[u8],
+) -> Result<()> {
+    // 解析目标 URL
+    let (host, port, path) = parse_http_url(target)?;
+
+    // 解析目标地址
+    let dest = SocketAddr::from(([0, 0, 0, 0], port));
+    let domain = Some(host.clone());
+
+    // 解析 DNS
+    let dest = resolve_destination(&dns, dest, Some(&host)).await?;
+
+    // 创建元数据
+    let metadata = Metadata {
+        network: Network::Tcp,
+        source: Some(peer),
+        destination: Some(dest),
+        domain: Some(host.clone()),
+        protocol: Some("http".to_string()),
+        process_name: None,
+        process_path: None,
+        inbound_tag: inbound_tag.to_string(),
+        inbound_type: inbound_type.to_string(),
+    };
+
+    // 连接到目标服务器
+    let mut remote = dialer.dial_tcp(&metadata, dest).await?;
+
+    // 重写请求（去掉代理格式，改为标准 HTTP 请求）
+    let rewritten_request = rewrite_http_request(method, &host, port, &path, full_request)?;
+
+    // 发送请求到目标服务器
+    remote.write_all(rewritten_request.as_bytes()).await?;
+
+    // 双向转发数据
+    relay_bidirectional(client, remote).await
+}
+
+fn parse_http_url(url: &str) -> Result<(String, u16, String)> {
+    // 处理完整 URL: http://example.com/path 或 http://example.com:8080/path
+    if url.starts_with("http://") {
+        let without_scheme = &url[7..];
+        if let Some(slash_pos) = without_scheme.find('/') {
+            let host_port = &without_scheme[..slash_pos];
+            let path = &without_scheme[slash_pos..];
+            if let Some(colon_pos) = host_port.find(':') {
+                let host = host_port[..colon_pos].to_string();
+                let port: u16 = host_port[colon_pos + 1..].parse()?;
+                return Ok((host, port, path.to_string()));
+            } else {
+                return Ok((host_port.to_string(), 80, path.to_string()));
+            }
+        } else {
+            // 没有路径
+            if let Some(colon_pos) = without_scheme.find(':') {
+                let host = without_scheme[..colon_pos].to_string();
+                let port: u16 = without_scheme[colon_pos + 1..].parse()?;
+                return Ok((host, port, "/".to_string()));
+            } else {
+                return Ok((without_scheme.to_string(), 80, "/".to_string()));
+            }
+        }
+    }
+
+    // 处理不带 scheme 的 URL: example.com/path
+    if let Some(slash_pos) = url.find('/') {
+        let host_port = &url[..slash_pos];
+        let path = &url[slash_pos..];
+        if let Some(colon_pos) = host_port.find(':') {
+            let host = host_port[..colon_pos].to_string();
+            let port: u16 = host_port[colon_pos + 1..].parse()?;
+            return Ok((host, port, path.to_string()));
+        } else {
+            return Ok((host_port.to_string(), 80, path.to_string()));
+        }
+    }
+
+    anyhow::bail!("invalid HTTP URL: {}", url)
+}
+
+fn rewrite_http_request(method: &str, host: &str, port: u16, path: &str, original_request: &str) -> Result<String> {
+    let mut lines: Vec<&str> = original_request.lines().collect();
+
+    if lines.is_empty() {
+        anyhow::bail!("empty HTTP request");
+    }
+
+    // 重写请求行：GET http://example.com/path HTTP/1.1 -> GET /path HTTP/1.1
+    let request_line_parts: Vec<&str> = lines[0].split_whitespace().collect();
+    if request_line_parts.len() < 3 {
+        anyhow::bail!("invalid HTTP request line");
+    }
+
+    let http_version = request_line_parts[2];
+    let new_request_line = format!("{} {} {}", method, path, http_version);
+    lines[0] = &new_request_line;
+
+    // 构建新请求
+    let mut new_request = String::new();
+    new_request.push_str(&new_request_line);
+    new_request.push_str("\r\n");
+
+    // 检查是否已有 Host header
+    let mut has_host = false;
+    for (i, line) in lines.iter().enumerate().skip(1) {
+        if line.is_empty() {
+            break;
+        }
+        if line.to_lowercase().starts_with("host:") {
+            has_host = true;
+        }
+        if i > 0 {
+            new_request.push_str(line);
+            new_request.push_str("\r\n");
+        }
+    }
+
+    // 如果没有 Host header，添加一个
+    if !has_host {
+        if port == 80 {
+            new_request.push_str(&format!("Host: {}\r\n", host));
+        } else {
+            new_request.push_str(&format!("Host: {}:{}\r\n", host, port));
+        }
+    }
+
+    new_request.push_str("\r\n");
+
+    Ok(new_request)
 }
