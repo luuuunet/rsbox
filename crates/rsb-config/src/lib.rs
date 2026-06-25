@@ -4,6 +4,10 @@ use serde::Deserialize;
 use serde_json::Value;
 use std::collections::HashSet;
 
+#[cfg(test)]
+#[path = "config_tests.rs"]
+mod config_tests;
+
 #[derive(Debug, Clone, Deserialize, Default)]
 pub struct Options {
     #[serde(default)]
