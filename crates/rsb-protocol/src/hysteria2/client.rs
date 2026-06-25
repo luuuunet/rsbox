@@ -192,12 +192,19 @@ impl Outbound for Hysteria2Outbound {
 
         // ✅ 测试：添加 padding（尝试不同值）
         let padding_len = 16; // 尝试非零 padding
-        tracing::debug!("hysteria2: target = {}, padding_len = {}", target, padding_len);
+        tracing::debug!(
+            "hysteria2: target = {}, padding_len = {}",
+            target,
+            padding_len
+        );
 
         let req = protocol::encode_tcp_request(&target, padding_len);
 
         // ✅ 打印发送的请求内容
-        tracing::error!("🔴 TCP request (first 128 bytes): {:02x?}", &req[..req.len().min(128)]);
+        tracing::error!(
+            "🔴 TCP request (first 128 bytes): {:02x?}",
+            &req[..req.len().min(128)]
+        );
         tracing::error!("🔴 TCP request length: {} bytes", req.len());
 
         send.write_all(&req).await?;

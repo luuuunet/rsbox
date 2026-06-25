@@ -224,7 +224,10 @@ impl RtRequest {
                     let err = (nl as *const u8).add(NLMSG_HDRLEN) as *const libc::nlmsgerr;
                     let error_code = (*err).error;
                     if error_code != 0 {
-                        anyhow::bail!("netlink error: {}", std::io::Error::from_raw_os_error(-error_code));
+                        anyhow::bail!(
+                            "netlink error: {}",
+                            std::io::Error::from_raw_os_error(-error_code)
+                        );
                     }
                 }
             }
