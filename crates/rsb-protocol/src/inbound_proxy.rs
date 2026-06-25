@@ -483,11 +483,15 @@ pub async fn resolve_destination(
     placeholder: SocketAddr,
     domain: Option<&str>,
 ) -> Result<SocketAddr> {
-    let Some(host) = domain else {
+    let Some(_host) = domain else {
         return Ok(placeholder);
     };
+    // Hy2/VLESS 等 outbound 会直接用域名建连；跳过同步 DNS 可显著降低首包延迟。
+    if placeholder.ip().is_unspecified() {
+        return Ok(placeholder);
+    }
     let port = placeholder.port();
-    let addrs = dns.lookup(host).await?;
+    let addrs = dns.lookup(_host).await?;
     let ip = addrs
         .into_iter()
         .next()
