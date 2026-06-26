@@ -9,7 +9,6 @@ on:
 env:
   CARGO_TERM_COLOR: always
   RUST_BACKTRACE: 1
-  # Prevent target-cpu=native from breaking ring on macOS CI runners
   RUSTFLAGS: ""
 
 jobs:
@@ -19,14 +18,14 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        os: [ubuntu-latest, windows-latest, macos-14]  # macos-14 是 Intel, macos-latest 将迁移到 macOS 26
+        os: [ubuntu-latest, windows-latest, macos-14]
     steps:
-      - uses: actions/checkout@v5  # 更新到 v5 支持 Node.js 24
+      - uses: actions/checkout@v4
 
       - uses: dtolnay/rust-toolchain@stable
 
       - name: Cache cargo
-        uses: actions/cache@v5  # 更新到 v5
+        uses: actions/cache@v4
         with:
           path: |
             ~/.cargo/registry
@@ -36,13 +35,13 @@ jobs:
           restore-keys: ci-test-${{ matrix.os }}-
 
       - name: Run tests
-        run: cargo test -p rsbox -p rsb-protocol -p rsb-core -p rsb-dns -p rsb-route --features rsb-protocol/wireguard-tunnel
+        run: cargo test -p rsbox -p rsb-protocol -p rsb-core -p rsb-dns -p rsb-route -p rsb-config --features rsb-protocol/wireguard-tunnel
 
   fmt:
     name: Rustfmt
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5  # 更新到 v5
+      - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: rustfmt
@@ -52,19 +51,19 @@ jobs:
     name: Clippy
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5  # 更新到 v5
+      - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable
         with:
           components: clippy
       - run: cargo clippy -p rsbox --features rsb-protocol/wireguard-tunnel -- -W clippy::all
-        continue-on-error: true
 
   build:
     name: Build (${{ matrix.os }})
     runs-on: ${{ matrix.os }}
     strategy:
+      fail-fast: false
       matrix:
-        os: [ubuntu-latest, windows-latest, macos-latest]
+        os: [ubuntu-latest, windows-latest, macos-14]
     steps:
       - uses: actions/checkout@v4
       - uses: dtolnay/rust-toolchain@stable

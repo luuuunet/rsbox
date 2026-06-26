@@ -102,7 +102,7 @@ impl AntiPollution {
             if !self.is_polluted(&local_addrs) {
                 return Ok(local_addrs);
             }
-            log::warn!("DNS pollution detected for {}, using trusted DNS", domain);
+            tracing::warn!("DNS pollution detected for {}, using trusted DNS", domain);
         }
 
         trusted_result
@@ -112,7 +112,7 @@ impl AntiPollution {
         match self.query_local(domain).await {
             Ok(addrs) if !self.is_polluted(&addrs) => Ok(addrs),
             _ => {
-                log::debug!("Local DNS failed or polluted for {}, using trusted DNS", domain);
+                tracing::debug!("Local DNS failed or polluted for {}, using trusted DNS", domain);
                 self.query_trusted(domain).await
             }
         }

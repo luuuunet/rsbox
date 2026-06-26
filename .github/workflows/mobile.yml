@@ -1,18 +1,13 @@
-name: Mobile Builds (Android & iOS)
+# Experimental mobile builds — manual trigger only.
+# Desktop CLI (rsbox) is not suitable for Android/iOS; this builds rsb-libbox.
+name: Mobile Builds (Experimental)
 
 on:
-  push:
-    tags:
-      - 'v*'
   workflow_dispatch:
-    inputs:
-      version:
-        description: 'Version to release (e.g., v0.1.0)'
-        required: true
-        default: 'v0.1.0'
 
 env:
   CARGO_TERM_COLOR: always
+  RUSTFLAGS: ""
 
 permissions:
   contents: write
@@ -56,75 +51,16 @@ jobs:
           echo "AR_armv7_linux_androideabi=$ANDROID_NDK_LATEST_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-ar" >> $GITHUB_ENV
           echo "AR_x86_64_linux_android=$ANDROID_NDK_LATEST_HOME/toolchains/llvm/prebuilt/linux-x86_64/bin/llvm-ar" >> $GITHUB_ENV
 
-      - name: Build
-        run: |
-          cargo build --release --target ${{ matrix.target }} --no-default-features
+      - name: Build rsb-libbox
+        run: cargo build --release -p rsb-libbox --target ${{ matrix.target }}
 
       - name: Prepare artifact
         run: |
           mkdir -p dist
-          cp target/${{ matrix.target }}/release/rsbox dist/rsbox-android-${{ matrix.arch }}
-          chmod +x dist/rsbox-android-${{ matrix.arch }}
+          cp "target/${{ matrix.target }}/release/librsb_libbox.so" "dist/librsb_libbox-android-${{ matrix.arch }}.so"
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
-          name: rsbox-android-${{ matrix.arch }}
-          path: dist/rsbox-android-${{ matrix.arch }}
-
-  build-ios:
-    name: Build iOS (${{ matrix.target }})
-    runs-on: macos-latest
-    strategy:
-      fail-fast: false
-      matrix:
-        include:
-          - target: aarch64-apple-ios
-            name: ios-arm64
-          - target: x86_64-apple-ios
-            name: ios-x86_64-simulator
-
-    steps:
-      - uses: actions/checkout@v4
-
-      - name: Setup Rust
-        uses: dtolnay/rust-toolchain@stable
-        with:
-          targets: ${{ matrix.target }}
-
-      - name: Build
-        run: |
-          cargo build --release --target ${{ matrix.target }} --no-default-features
-
-      - name: Prepare artifact
-        run: |
-          mkdir -p dist
-          cp target/${{ matrix.target }}/release/rsbox dist/rsbox-${{ matrix.name }}
-          chmod +x dist/rsbox-${{ matrix.name }}
-
-      - name: Upload artifact
-        uses: actions/upload-artifact@v4
-        with:
-          name: rsbox-${{ matrix.name }}
-          path: dist/rsbox-${{ matrix.name }}
-
-  release:
-    name: Create Mobile Release
-    needs: [build-android, build-ios]
-    runs-on: ubuntu-latest
-    steps:
-      - uses: actions/download-artifact@v4
-        with:
-          path: dist
-          merge-multiple: true
-
-      - name: List artifacts
-        run: find dist -type f -exec ls -lh {} \;
-
-      - name: Upload to Release
-        uses: softprops/action-gh-release@v2
-        with:
-          files: dist/*
-          tag_name: ${{ github.ref_name }}
-          draft: false
-          prerelease: false
+          name: rsb-libbox-android-${{ matrix.arch }}
+          path: dist/librsb_libbox-android-${{ matrix.arch }}.so

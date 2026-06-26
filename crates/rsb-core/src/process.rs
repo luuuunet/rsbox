@@ -1,6 +1,6 @@
 //! Process lookup for TCP connections (proxy accept socket or TUN tuple).
 
-use std::net::SocketAddr;
+use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ProcessInfo {

@@ -7,11 +7,11 @@ const PROC_PIDFDSOCKETINFO: i32 = 3;
 const PROC_PIDFDSOCKETINFO_SIZE: i32 = 3;
 const SOCKETINFO_TCP: i32 = 2;
 
-#[repr(C)]
 // macOS routing table message header length
 const RTM_HDRLEN: usize = 92; // sizeof(struct rt_msghdr) on macOS
 
-#[derive(Clone)]
+#[repr(C)]
+#[derive(Clone, Copy)]
 struct ProcFdInfo {
     proc_fd: i32,
     fd: i32,
