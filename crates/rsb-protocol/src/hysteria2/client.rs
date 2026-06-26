@@ -2,37 +2,51 @@ use super::{auth, obfs, obfs_socket, protocol, udp_client};
 use crate::transport;
 use anyhow::{Context, Result};
 use async_trait::async_trait;
-use h3_quinn::Connection;
+use h3_quinn::Connection as H3QuinnConnection;
 use http::{Request, StatusCode};
 use quinn::{ClientConfig, Endpoint, TransportConfig};
 use rsb_core::{BoxError, Network, Outbound, ProxyConn, ProxyUdpSocket, SplitProxy};
 use serde_json::Value;
 use std::net::SocketAddr;
-use std::sync::atomic::{AtomicU16, AtomicU32, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU16, AtomicU32, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 static SESSION_COUNTER: AtomicU32 = AtomicU32::new(1);
 
+struct Hy2Session {
+    endpoint: Endpoint,
+    connection: Arc<quinn::Connection>,
+    port: u16,
+    _h3_keep_alive: (tokio::task::JoinHandle<()>, Box<dyn std::any::Any + Send>),
+}
+
+struct Hy2Shared {
+    session: tokio::sync::Mutex<Option<Hy2Session>>,
+    current_port: AtomicU16,
+    hop_task_started: AtomicBool,
+    port: u16,
+    port_start: Option<u16>,
+    port_end: Option<u16>,
+}
+
 pub struct Hysteria2Outbound {
     tag: String,
     server: String,
-    port: u16,                      // 保留用于单端口模式
-    port_start: Option<u16>,        // 🔧 端口跳跃：范围起始
-    port_end: Option<u16>,          // 🔧 端口跳跃：范围结束
-    hop_interval: Option<Duration>, // 🔧 端口跳跃：跳跃间隔
-    current_port: Arc<AtomicU16>,   // 🔧 端口跳跃：当前使用的端口
+    port: u16,
+    port_start: Option<u16>,
+    port_end: Option<u16>,
+    hop_interval: Option<Duration>,
     password: String,
     up_mbps: u32,
     down_mbps: u32,
     sni: Option<String>,
     insecure: bool,
     obfs: Option<Arc<obfs::Salamander>>,
-    connection: tokio::sync::Mutex<Option<Arc<quinn::Connection>>>,
-    // 保持 H3 driver 和 send_request 活着，防止连接关闭
-    _h3_keep_alive:
-        tokio::sync::Mutex<Option<(tokio::task::JoinHandle<()>, Box<dyn std::any::Any + Send>)>>,
+    idle_timeout: Duration,
+    keep_alive_period: Duration,
+    shared: Arc<Hy2Shared>,
 }
 
 impl Hysteria2Outbound {
@@ -44,10 +58,8 @@ impl Hysteria2Outbound {
                 .map(|p| Arc::new(obfs::Salamander::new(p)))
         });
 
-        // 🔧 端口跳跃：解析 server_ports
         let (port, port_start, port_end) = if let Some(server_ports) = raw.get("server_ports") {
             if let Some(ports_str) = server_ports.as_str() {
-                // 解析端口范围：666-766
                 if let Some((start, end)) = ports_str.split_once('-') {
                     let start_port = start
                         .trim()
@@ -59,7 +71,6 @@ impl Hysteria2Outbound {
                         .context("invalid port range end")?;
                     (start_port, Some(start_port), Some(end_port))
                 } else {
-                    // 单端口：666
                     let single_port = ports_str.parse::<u16>().context("invalid port")?;
                     (single_port, None, None)
                 }
@@ -67,7 +78,6 @@ impl Hysteria2Outbound {
                 return Err(anyhow::anyhow!("server_ports must be string"));
             }
         } else {
-            // 兼容旧配置：server_port
             let port = raw
                 .get("server_port")
                 .and_then(|v| v.as_u64())
@@ -75,18 +85,10 @@ impl Hysteria2Outbound {
             (port, None, None)
         };
 
-        // 🔧 端口跳跃：解析 hop_interval
         let hop_interval = raw
             .get("hop_interval")
             .and_then(|v| v.as_str())
-            .and_then(|s| {
-                // 解析 "30s" 格式
-                if let Some(secs) = s.strip_suffix('s') {
-                    secs.parse::<u64>().ok().map(Duration::from_secs)
-                } else {
-                    None
-                }
-            });
+            .and_then(parse_duration_str);
 
         Ok(Self {
             tag,
@@ -99,7 +101,6 @@ impl Hysteria2Outbound {
             port_start,
             port_end,
             hop_interval,
-            current_port: Arc::new(AtomicU16::new(port)), // 🔧 初始化当前端口
             password: raw
                 .get("password")
                 .and_then(|v| v.as_str())
@@ -116,191 +117,235 @@ impl Hysteria2Outbound {
                 .and_then(|v| v.as_bool())
                 .unwrap_or(false),
             obfs,
-            connection: tokio::sync::Mutex::new(None),
-            _h3_keep_alive: tokio::sync::Mutex::new(None),
+            idle_timeout: raw
+                .get("idle_timeout")
+                .and_then(|v| v.as_str())
+                .and_then(parse_duration_str)
+                .unwrap_or(Duration::from_secs(30)),
+            keep_alive_period: raw
+                .get("keep_alive_period")
+                .and_then(|v| v.as_str())
+                .and_then(parse_duration_str)
+                .unwrap_or(Duration::from_secs(10)),
+            shared: Arc::new(Hy2Shared {
+                session: tokio::sync::Mutex::new(None),
+                current_port: AtomicU16::new(port),
+                hop_task_started: AtomicBool::new(false),
+                port,
+                port_start,
+                port_end,
+            }),
         })
     }
 
-    // 🔧 端口跳跃：选择下一个端口
-    fn next_port(&self) -> u16 {
-        if let (Some(start), Some(end)) = (self.port_start, self.port_end) {
-            if start == end {
-                return start;
-            }
-            // 随机选择端口范围内的端口
-            use rand::Rng;
-            let mut rng = rand::thread_rng();
-            rng.gen_range(start..=end)
-        } else {
-            self.port
+    fn maybe_start_port_hopping(&self) {
+        if self.hop_interval.is_none() || self.shared.hop_task_started.swap(true, Ordering::Relaxed)
+        {
+            return;
         }
+        let shared = Arc::clone(&self.shared);
+        let tag = self.tag.clone();
+        let interval = self.hop_interval.unwrap();
+        tokio::spawn(async move {
+            tracing::info!(tag = %tag, "hysteria2: port hopping started");
+            loop {
+                tokio::time::sleep(interval).await;
+                let new_port = next_port_for(&shared);
+                shared.current_port.store(new_port, Ordering::Relaxed);
+                tracing::info!(tag = %tag, port = new_port, "hysteria2: hopping port");
+                reset_session(&shared, "port hopping").await;
+            }
+        });
     }
 
-    // 🔧 端口跳跃：启动定时切换任务
-    fn start_port_hopping(self: Arc<Self>) {
-        if let Some(interval) = self.hop_interval {
-            tokio::spawn(async move {
-                loop {
-                    tokio::time::sleep(interval).await;
-
-                    let new_port = self.next_port();
-                    self.current_port.store(new_port, Ordering::Relaxed);
-
-                    tracing::debug!("hysteria2: hopping to port {}", new_port);
-
-                    // 重建连接
-                    let mut guard = self.connection.lock().await;
-                    if let Some(conn) = guard.take() {
-                        conn.close(0u32.into(), b"port hopping");
-                    }
-                    // 下次 get_connection 会自动建立新连接
-                }
-            });
-        }
+    async fn reset_session(&self, reason: &str) {
+        reset_session(&self.shared, reason).await;
     }
 
     async fn get_connection(&self) -> Result<Arc<quinn::Connection>> {
-        // 🔧 端口跳跃：首次连接时启动任务
-        use std::sync::atomic::AtomicBool;
-        static HOPPING_STARTED: AtomicBool = AtomicBool::new(false);
+        self.maybe_start_port_hopping();
 
-        if self.hop_interval.is_some() && !HOPPING_STARTED.swap(true, Ordering::Relaxed) {
-            if let (Some(start), Some(end)) = (self.port_start, self.port_end) {
-                let interval = self.hop_interval.unwrap();
-                let current_port = self.current_port.clone();
-                let tag = self.tag.clone();
-
-                tokio::spawn(async move {
-                    tracing::info!("hysteria2: port hopping started for {}", tag);
-                    loop {
-                        tokio::time::sleep(interval).await;
-
-                        // 随机选择新端口
-                        use rand::Rng;
-                        let mut rng = rand::thread_rng();
-                        let new_port = if start == end {
-                            start
-                        } else {
-                            rng.gen_range(start..=end)
-                        };
-
-                        current_port.store(new_port, Ordering::Relaxed);
-                        tracing::info!("hysteria2: hopped to port {}", new_port);
-                    }
-                });
+        let current_port = self.shared.current_port.load(Ordering::Relaxed);
+        {
+            let guard = self.shared.session.lock().await;
+            if let Some(session) = guard.as_ref() {
+                if session.port == current_port && session.connection.close_reason().is_none() {
+                    return Ok(session.connection.clone());
+                }
             }
         }
 
-        let mut guard = self.connection.lock().await;
-        if let Some(conn) = guard.as_ref() {
-            if conn.close_reason().is_none() {
-                return Ok(conn.clone());
-            }
-        }
-        let conn = Arc::new(connect_and_auth(self).await?);
-        *guard = Some(conn.clone());
+        self.reset_session("reconnect").await;
+        let session = self.connect_session(current_port).await?;
+        let conn = session.connection.clone();
+        self.spawn_close_watcher(session.connection.clone());
+        *self.shared.session.lock().await = Some(session);
         Ok(conn)
     }
-}
 
-async fn connect_and_auth(ob: &Hysteria2Outbound) -> Result<quinn::Connection> {
-    rustls::crypto::ring::default_provider()
-        .install_default()
-        .ok();
-    let sni = ob.sni.clone().unwrap_or_else(|| ob.server.clone());
+    fn spawn_close_watcher(&self, conn: Arc<quinn::Connection>) {
+        let shared = Arc::clone(&self.shared);
+        let tag = self.tag.clone();
+        let conn_id = conn.stable_id();
+        tokio::spawn(async move {
+            conn.closed().await;
+            tracing::debug!(tag = %tag, conn_id, "hysteria2: quic connection closed");
+            let mut guard = shared.session.lock().await;
+            if guard
+                .as_ref()
+                .is_some_and(|s| s.connection.stable_id() == conn_id)
+            {
+                *guard = None;
+            }
+        });
+    }
 
-    // 🔧 端口跳跃：使用 current_port
-    let current_port = ob.current_port.load(Ordering::Relaxed);
+    async fn connect_session(&self, port: u16) -> Result<Hy2Session> {
+        rustls::crypto::ring::default_provider()
+            .install_default()
+            .ok();
+        let sni = self.sni.clone().unwrap_or_else(|| self.server.clone());
 
-    let tls_cfg = if ob.insecure {
-        rustls::ClientConfig::builder()
-            .dangerous()
-            .with_custom_certificate_verifier(Arc::new(transport::SkipVerifier))
-            .with_no_client_auth()
-    } else {
-        rustls::ClientConfig::builder()
-            .with_root_certificates({
-                let mut roots = rustls::RootCertStore::empty();
-                roots.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
-                roots
-            })
-            .with_no_client_auth()
-    };
-    let mut tls_cfg = tls_cfg;
-    tls_cfg.alpn_protocols = vec![b"h3".to_vec()];
-    let mut client_cfg = ClientConfig::new(Arc::new(
-        quinn::crypto::rustls::QuicClientConfig::try_from(tls_cfg)?,
-    ));
-    let mut transport_cfg = TransportConfig::default();
-    transport_cfg.keep_alive_interval(Some(Duration::from_secs(15)));
-    // 🔧 优化：增加 max_idle_timeout 防止长时间连接断开
-    transport_cfg.max_idle_timeout(Some(Duration::from_secs(300).try_into().unwrap()));
-    client_cfg.transport_config(Arc::new(transport_cfg));
+        let tls_cfg = if self.insecure {
+            rustls::ClientConfig::builder()
+                .dangerous()
+                .with_custom_certificate_verifier(Arc::new(transport::SkipVerifier))
+                .with_no_client_auth()
+        } else {
+            rustls::ClientConfig::builder()
+                .with_root_certificates({
+                    let mut roots = rustls::RootCertStore::empty();
+                    roots.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
+                    roots
+                })
+                .with_no_client_auth()
+        };
+        let mut tls_cfg = tls_cfg;
+        tls_cfg.alpn_protocols = vec![b"h3".to_vec()];
+        let mut client_cfg = ClientConfig::new(Arc::new(
+            quinn::crypto::rustls::QuicClientConfig::try_from(tls_cfg)?,
+        ));
+        let mut transport_cfg = TransportConfig::default();
+        transport_cfg.keep_alive_interval(Some(self.keep_alive_period));
+        transport_cfg.max_idle_timeout(Some(
+            self.idle_timeout
+                .try_into()
+                .map_err(|e| anyhow::anyhow!("invalid hysteria2 idle_timeout: {e}"))?,
+        ));
+        client_cfg.transport_config(Arc::new(transport_cfg));
 
-    let addr = tokio::net::lookup_host(format!("{}:{}", ob.server, current_port))
-        .await
-        .context("resolve hysteria2 server")?
-        .next()
-        .context("no hysteria2 server address")?;
-
-    let connection = if let Some(ref obfs) = ob.obfs {
-        let (mut endpoint, _) =
-            obfs_socket::endpoint_with_obfs("0.0.0.0:0".parse()?, obfs.clone())?;
-        endpoint.set_default_client_config(client_cfg);
-        endpoint
-            .connect(addr, &sni)?
+        let addr = tokio::net::lookup_host(format!("{}:{}", self.server, port))
             .await
-            .context("quic connect")?
-    } else {
-        let mut endpoint = Endpoint::client("0.0.0.0:0".parse()?)?;
-        endpoint.set_default_client_config(client_cfg);
-        endpoint
-            .connect(addr, &sni)?
-            .await
-            .context("quic connect")?
-    };
-    authenticate(&connection, &ob.password, ob.up_mbps).await?;
-    Ok(connection)
-}
+            .context("resolve hysteria2 server")?
+            .next()
+            .context("no hysteria2 server address")?;
 
-async fn authenticate(connection: &quinn::Connection, password: &str, up_mbps: u32) -> Result<()> {
-    let h3_conn = Connection::new(connection.clone());
-    let (mut driver, mut send_request) = h3::client::new(h3_conn).await.context("h3 client")?;
+        let mut endpoint = if let Some(ref obfs) = self.obfs {
+            let (mut ep, _) = obfs_socket::endpoint_with_obfs("0.0.0.0:0".parse()?, obfs.clone())?;
+            ep.set_default_client_config(client_cfg);
+            ep
+        } else {
+            let mut ep = Endpoint::client("0.0.0.0:0".parse()?)?;
+            ep.set_default_client_config(client_cfg);
+            ep
+        };
 
-    // Keep H3 driver alive - store handle to prevent premature drop
-    let driver_handle = tokio::spawn(async move {
-        let _ = std::future::poll_fn(|cx| driver.poll_close(cx)).await;
-    });
-
-    let mut req = Request::builder()
-        .method("POST")
-        .uri("https://hysteria/auth")
-        .header("hysteria-auth", password);
-    if up_mbps > 0 {
-        req = req.header(
-            "hysteria-cc-rx",
-            (up_mbps as u64 * auth::MBPS_TO_BPS).to_string(),
+        let connection = Arc::new(
+            endpoint
+                .connect(addr, &sni)?
+                .await
+                .context("quic connect")?,
         );
+
+        let h3_keep_alive = self.authenticate(&connection).await?;
+
+        tracing::info!(
+            tag = %self.tag,
+            server = %self.server,
+            port,
+            idle_timeout_secs = self.idle_timeout.as_secs(),
+            keep_alive_secs = self.keep_alive_period.as_secs(),
+            "hysteria2: session established"
+        );
+
+        Ok(Hy2Session {
+            endpoint,
+            connection,
+            port,
+            _h3_keep_alive: h3_keep_alive,
+        })
     }
-    let padding = auth::random_padding(64, 512);
-    req = req.header("hysteria-padding", padding.as_str());
-    let mut stream = send_request.send_request(req.body(())?).await?;
-    stream.finish().await?;
-    let resp = stream.recv_response().await?;
 
-    tracing::debug!("hysteria2: auth response status = {}", resp.status());
+    async fn authenticate(
+        &self,
+        connection: &quinn::Connection,
+    ) -> Result<(tokio::task::JoinHandle<()>, Box<dyn std::any::Any + Send>)> {
+        let h3_conn = H3QuinnConnection::new(connection.clone());
+        let (mut driver, mut send_request) = h3::client::new(h3_conn).await.context("h3 client")?;
 
-    if resp.status() != StatusCode::from_u16(233).unwrap() {
-        anyhow::bail!("hysteria2 auth failed: {}", resp.status());
+        let driver_handle = tokio::spawn(async move {
+            let _ = std::future::poll_fn(|cx| driver.poll_close(cx)).await;
+        });
+
+        let mut req = Request::builder()
+            .method("POST")
+            .uri("https://hysteria/auth")
+            .header("hysteria-auth", &self.password);
+        if self.up_mbps > 0 {
+            req = req.header(
+                "hysteria-cc-rx",
+                (self.up_mbps as u64 * auth::MBPS_TO_BPS).to_string(),
+            );
+        }
+        let padding = auth::random_padding(64, 512);
+        req = req.header("hysteria-padding", padding.as_str());
+        let mut stream = send_request.send_request(req.body(())?).await?;
+        stream.finish().await?;
+        let resp = stream.recv_response().await?;
+
+        if resp.status() != StatusCode::from_u16(233).unwrap() {
+            anyhow::bail!("hysteria2 auth failed: {}", resp.status());
+        }
+
+        Ok((driver_handle, Box::new(send_request)))
     }
 
-    tracing::debug!("hysteria2: authentication completed");
+    async fn dial_tcp_inner(
+        &self,
+        destination: SocketAddr,
+        domain: Option<&str>,
+    ) -> Result<ProxyConn, BoxError> {
+        let conn = self.get_connection().await?;
+        let (mut send, mut recv) = conn.open_bi().await.context("open hy2 stream")?;
 
-    // Keep driver and request alive
-    std::mem::forget(driver_handle);
-    std::mem::forget(send_request);
+        let target = if let Some(domain) = domain {
+            format!("{}:{}", domain, destination.port())
+        } else {
+            format_address(destination)
+        };
 
-    Ok(())
+        let padding_len = auth::random_padding_len(64, 512);
+        let req = protocol::encode_tcp_request(&target, padding_len);
+        send.write_all(&req).await?;
+
+        let mut resp_buf = vec![0u8; 2048];
+        let read_result =
+            tokio::time::timeout(Duration::from_secs(10), recv.read(&mut resp_buf)).await;
+
+        let n = match read_result {
+            Ok(Ok(Some(n))) => n,
+            Ok(Ok(None)) => anyhow::bail!("hysteria2: stream closed by server"),
+            Ok(Err(e)) => return Err(e.into()),
+            Err(_) => anyhow::bail!("hysteria2: read timeout"),
+        };
+
+        let mut cursor = &resp_buf[..n];
+        let (ok, _) = protocol::decode_tcp_response(&mut cursor)?;
+        if !ok {
+            anyhow::bail!("hysteria2 tcp request rejected");
+        }
+        Ok(Box::new(SplitProxy::new(recv, send)))
+    }
 }
 
 #[async_trait]
@@ -319,64 +364,52 @@ impl Outbound for Hysteria2Outbound {
         destination: SocketAddr,
         domain: Option<&str>,
     ) -> Result<ProxyConn, BoxError> {
-        let conn = self.get_connection().await?;
-        let (mut send, mut recv) = conn.open_bi().await.context("open hy2 stream")?;
-
-        // ✅ 修复：优先使用域名，如果没有域名才使用 IP
-        let target = if let Some(domain) = domain {
-            format!("{}:{}", domain, destination.port())
-        } else {
-            format_address(destination)
-        };
-
-        let padding_len = auth::random_padding_len(64, 512);
-        tracing::debug!(
-            "hysteria2: target = {}, padding_len = {}, using_domain = {}",
-            target,
-            padding_len,
-            domain.is_some()
-        );
-
-        let req = protocol::encode_tcp_request(&target, padding_len);
-
-        send.write_all(&req).await?;
-        tracing::debug!("hysteria2: sent tcp request, waiting for response");
-        let mut resp_buf = vec![0u8; 2048];
-
-        // ✅ 添加超时和详细错误日志
-        tracing::debug!("hysteria2: attempting to read response...");
-        let read_result =
-            tokio::time::timeout(std::time::Duration::from_secs(10), recv.read(&mut resp_buf))
-                .await;
-
-        tracing::debug!("hysteria2: read_result = {:?}", read_result.is_ok());
-
-        let n = match read_result {
-            Ok(Ok(Some(n))) => n,
-            Ok(Ok(None)) => anyhow::bail!("hysteria2: stream closed by server"),
-            Ok(Err(e)) => return Err(e.into()),
-            Err(_) => anyhow::bail!("hysteria2: read timeout"),
-        };
-
-        tracing::debug!("hysteria2: received {} bytes response", n);
-
-        let mut cursor = &resp_buf[..n];
-        let (ok, _) = protocol::decode_tcp_response(&mut cursor)?;
-        if !ok {
-            anyhow::bail!("hysteria2 tcp request rejected");
+        match self.dial_tcp_inner(destination, domain).await {
+            Ok(conn) => Ok(conn),
+            Err(err) => {
+                tracing::warn!(
+                    tag = %self.tag,
+                    error = %err,
+                    "hysteria2: dial failed, reconnecting once"
+                );
+                self.reset_session("dial retry").await;
+                self.dial_tcp_inner(destination, domain).await
+            },
         }
-        Ok(Box::new(SplitProxy::new(recv, send)))
     }
     async fn dial_udp(&self, _destination: SocketAddr) -> Result<ProxyUdpSocket, BoxError> {
-        let conn = self.get_connection().await?;
+        let conn = match self.get_connection().await {
+            Ok(conn) => conn,
+            Err(_) => {
+                self.reset_session("udp dial retry").await;
+                self.get_connection().await?
+            },
+        };
         let session_id = SESSION_COUNTER.fetch_add(1, Ordering::Relaxed);
         Ok(udp_client::hy2_udp_socket(conn, session_id))
     }
     async fn close(&self) -> Result<(), BoxError> {
-        if let Some(conn) = self.connection.lock().await.take() {
-            conn.close(0u32.into(), b"close");
-        }
+        self.reset_session("close").await;
         Ok(())
+    }
+}
+
+async fn reset_session(shared: &Hy2Shared, reason: &str) {
+    let mut guard = shared.session.lock().await;
+    if let Some(session) = guard.take() {
+        session.connection.close(0u32.into(), reason.as_bytes());
+    }
+}
+
+fn next_port_for(shared: &Hy2Shared) -> u16 {
+    if let (Some(start), Some(end)) = (shared.port_start, shared.port_end) {
+        if start == end {
+            return start;
+        }
+        use rand::Rng;
+        rand::rng().random_range(start..=end)
+    } else {
+        shared.port
     }
 }
 
@@ -384,5 +417,22 @@ fn format_address(addr: SocketAddr) -> String {
     match addr {
         SocketAddr::V4(v4) => format!("{}:{}", v4.ip(), v4.port()),
         SocketAddr::V6(v6) => format!("[{}]:{}", v6.ip(), v6.port()),
+    }
+}
+
+fn parse_duration_str(s: &str) -> Option<Duration> {
+    if let Some(secs) = s.strip_suffix('s') {
+        secs.parse::<u64>().ok().map(Duration::from_secs)
+    } else if let Some(mins) = s.strip_suffix('m') {
+        mins.parse::<u64>()
+            .ok()
+            .map(|m| Duration::from_secs(m * 60))
+    } else if let Some(hours) = s.strip_suffix('h') {
+        hours
+            .parse::<u64>()
+            .ok()
+            .map(|h| Duration::from_secs(h * 3600))
+    } else {
+        None
     }
 }
