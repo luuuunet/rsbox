@@ -1,7 +1,7 @@
 //! Original destination lookup for transparent proxy (redirect / tproxy).
 
-use anyhow::Result;
-use std::net::SocketAddr;
+use anyhow::{Context, Result};
+use std::net::{Ipv4Addr, Ipv6Addr, SocketAddr};
 use tokio::net::TcpStream;
 
 const LINUX_SO_ORIGINAL_DST: libc::c_int = 80;
