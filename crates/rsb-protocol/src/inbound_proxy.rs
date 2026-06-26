@@ -9,6 +9,120 @@ use std::sync::Arc;
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::net::{TcpListener, TcpStream};
 
+// ✅ 异步清理模块（内联）
+mod async_cleanup {
+    use std::sync::Arc;
+    use tokio::sync::mpsc;
+    use tokio::net::TcpStream;
+    use tokio::io::AsyncWriteExt;
+    use std::pin::Pin;
+    use std::task::{Context, Poll};
+
+    enum CleanupRequest {
+        TcpStream(TcpStream),
+    }
+
+    pub struct AsyncCleanup {
+        sender: mpsc::UnboundedSender<CleanupRequest>,
+    }
+
+    impl AsyncCleanup {
+        pub fn new() -> Arc<Self> {
+            let (tx, mut rx) = mpsc::unbounded_channel();
+            tokio::spawn(async move {
+                tracing::info!("✅ AsyncCleanup 后台任务已启动");
+                let mut count = 0u64;
+                while let Some(request) = rx.recv().await {
+                    match request {
+                        CleanupRequest::TcpStream(mut stream) => {
+                            match stream.shutdown().await {
+                                Ok(_) => {
+                                    count += 1;
+                                    tracing::trace!("✅ TcpStream #{} 已清理", count);
+                                }
+                                Err(e) => {
+                                    tracing::debug!("⚠️ shutdown 失败: {}", e);
+                                }
+                            }
+                        }
+                    }
+                }
+                tracing::info!("🛑 AsyncCleanup 已退出，共清理 {} 个连接", count);
+            });
+            Arc::new(Self { sender: tx })
+        }
+
+        pub fn cleanup_stream(&self, stream: TcpStream) {
+            let _ = self.sender.send(CleanupRequest::TcpStream(stream));
+        }
+    }
+
+    pub struct AutoCleanStream {
+        stream: Option<TcpStream>,
+        cleanup: Arc<AsyncCleanup>,
+    }
+
+    impl AutoCleanStream {
+        pub fn new(stream: TcpStream, cleanup: Arc<AsyncCleanup>) -> Self {
+            Self {
+                stream: Some(stream),
+                cleanup,
+            }
+        }
+
+        pub fn get_mut(&mut self) -> &mut TcpStream {
+            self.stream.as_mut().expect("stream is None")
+        }
+    }
+
+    impl Drop for AutoCleanStream {
+        fn drop(&mut self) {
+            if let Some(stream) = self.stream.take() {
+                self.cleanup.cleanup_stream(stream);
+                tracing::trace!("📤 AutoCleanStream drop - 已发送清理请求");
+            }
+        }
+    }
+
+    impl tokio::io::AsyncRead for AutoCleanStream {
+        fn poll_read(
+            mut self: Pin<&mut Self>,
+            cx: &mut std::task::Context<'_>,
+            buf: &mut tokio::io::ReadBuf<'_>,
+        ) -> Poll<std::io::Result<()>> {
+            Pin::new(self.stream.as_mut().expect("stream is None")).poll_read(cx, buf)
+        }
+    }
+
+    impl tokio::io::AsyncWrite for AutoCleanStream {
+        fn poll_write(
+            mut self: Pin<&mut Self>,
+            cx: &mut std::task::Context<'_>,
+            buf: &[u8],
+        ) -> Poll<std::io::Result<usize>> {
+            Pin::new(self.stream.as_mut().expect("stream is None")).poll_write(cx, buf)
+        }
+
+        fn poll_flush(
+            mut self: Pin<&mut Self>,
+            cx: &mut std::task::Context<'_>,
+        ) -> Poll<std::io::Result<()>> {
+            Pin::new(self.stream.as_mut().expect("stream is None")).poll_flush(cx)
+        }
+
+        fn poll_shutdown(
+            mut self: Pin<&mut Self>,
+            cx: &mut std::task::Context<'_>,
+        ) -> Poll<std::io::Result<()>> {
+            Pin::new(self.stream.as_mut().expect("stream is None")).poll_shutdown(cx)
+        }
+    }
+
+    impl Unpin for AutoCleanStream {}
+}
+
+use async_cleanup::{AsyncCleanup, AutoCleanStream};
+
 #[derive(Clone, Copy, PartialEq, Eq)]
 enum ProxyMode {
     Mixed,
@@ -30,6 +144,8 @@ pub struct MixedInbound {
     tcp_multi_path: bool,
     sniff: bool,
     sniff_override_destination: bool,
+    // ✅ 异步清理器
+    cleanup: Arc<AsyncCleanup>,
 }
 
 impl MixedInbound {
@@ -66,6 +182,7 @@ impl MixedInbound {
             tcp_multi_path,
             sniff,
             sniff_override_destination,
+            cleanup: AsyncCleanup::new(),  // ✅ 初始化异步清理器
         })
     }
 }
