@@ -110,6 +110,8 @@ async fn connect_and_auth(ob: &Hysteria2Outbound) -> Result<quinn::Connection> {
     ));
     let mut transport_cfg = TransportConfig::default();
     transport_cfg.keep_alive_interval(Some(Duration::from_secs(15)));
+    // 🔧 优化：增加 max_idle_timeout 防止长时间连接断开
+    transport_cfg.max_idle_timeout(Some(Duration::from_secs(300).try_into().unwrap()));
     client_cfg.transport_config(Arc::new(transport_cfg));
 
     let addr = tokio::net::lookup_host(format!("{}:{}", ob.server, ob.port))
