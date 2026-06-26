@@ -1,6 +1,6 @@
 //! Process lookup for TCP connections (proxy accept socket or TUN tuple).
 
-use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
+use std::net::SocketAddr;
 
 #[derive(Debug, Clone, Default, PartialEq, Eq)]
 pub struct ProcessInfo {
@@ -47,7 +47,6 @@ pub fn lookup_process_for_tuple(local: SocketAddr, remote: SocketAddr) -> Proces
         {
             return crate::platform::lookup_process_for_tcp_tuple(local, remote);
         }
-        ProcessInfo::default()
     }
     ProcessInfo::default()
 }

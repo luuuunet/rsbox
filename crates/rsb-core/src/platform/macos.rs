@@ -8,6 +8,10 @@ const PROC_PIDFDSOCKETINFO_SIZE: i32 = 3;
 const SOCKETINFO_TCP: i32 = 2;
 
 #[repr(C)]
+// macOS routing table message header length
+const RTM_HDRLEN: usize = 92; // sizeof(struct rt_msghdr) on macOS
+
+#[derive(Clone)]
 struct ProcFdInfo {
     proc_fd: i32,
     fd: i32,
@@ -82,7 +86,7 @@ pub fn detect_default_interface() -> Result<String> {
     if fd < 0 {
         anyhow::bail!("routing socket failed");
     }
-    let mut msg = RouteMsg::get_request();
+    let msg = RouteMsg::get_request();
     let ret = unsafe { libc::write(fd, msg.as_ptr() as *const _, msg.len()) };
     if ret <= 0 {
         unsafe { libc::close(fd) };
@@ -117,7 +121,7 @@ pub fn lookup_process_for_tcp_tuple(local: SocketAddr, remote: SocketAddr) -> cr
     let mut pids = vec![0i32; 4096];
     let n = unsafe {
         libc::proc_listallpids(
-            pids.as_mut_ptr(),
+            pids.as_mut_ptr() as *mut libc::c_void,
             (pids.len() * mem::size_of::<i32>()) as i32,
         )
     };
@@ -226,7 +230,7 @@ struct RouteMsg {
 
 impl RouteMsg {
     fn get_request() -> Self {
-        let mut bytes = vec![0u8; libc::RTM_HDRLEN + 32];
+        let mut bytes = vec![0u8; RTM_HDRLEN + 32];
         let hdr = bytes.as_mut_ptr() as *mut libc::rt_msghdr;
         unsafe {
             (*hdr).rtm_msglen = bytes.len() as u16;
@@ -241,7 +245,7 @@ impl RouteMsg {
     }
 
     fn add_request(dest: IpAddr, prefix: u8, ifindex: u32) -> Self {
-        let mut bytes = vec![0u8; libc::RTM_HDRLEN + 128];
+        let mut bytes = vec![0u8; RTM_HDRLEN + 128];
         let hdr = bytes.as_mut_ptr() as *mut libc::rt_msghdr;
         unsafe {
             (*hdr).rtm_msglen = bytes.len() as u16;
@@ -378,12 +382,12 @@ fn append_netmask_v6(buf: &mut Vec<u8>, prefix: u8) {
 }
 
 fn parse_route_ifname(buf: &[u8]) -> Result<String> {
-    if buf.len() < libc::RTM_HDRLEN {
+    if buf.len() < RTM_HDRLEN {
         anyhow::bail!("short route message");
     }
     let hdr = buf.as_ptr() as *const libc::rt_msghdr;
     let addrs = unsafe { (*hdr).rtm_addrs };
-    let mut offset = libc::RTM_HDRLEN;
+    let mut offset = RTM_HDRLEN;
     let mut ifname = None;
     for bit in 0..8 {
         if addrs & (1 << bit) == 0 {

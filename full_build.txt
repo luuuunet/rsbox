@@ -1,0 +1,434 @@
+   Compiling rsb-core v0.1.0 (D:\morust\rsbox\crates\rsb-core)
+warning: value assigned to `pinned` is never read
+   --> crates\rsb-dns\src\lib.rs:99:26
+    |
+ 99 |         let mut pinned = None;
+    |                          ^^^^ this value is reassigned later and never used
+...
+123 |                             pinned = Some(router);
+    |                             ------ `pinned` is overwritten here before the previous value is read
+    |
+    = note: `#[warn(unused_assignments)]` (part of `#[warn(unused)]`) on by default
+
+warning: value assigned to `pinned` is never read
+   --> crates\rsb-dns\src\lib.rs:152:26
+    |
+152 |         let mut pinned = None;
+    |                          ^^^^ this value is reassigned later and never used
+...
+171 |                         pinned = Some(router);
+    |                         ------ `pinned` is overwritten here before the previous value is read
+
+warning: `rsb-dns` (lib) generated 2 warnings
+   Compiling rsb-wireguard v0.1.0 (D:\morust\rsbox\crates\rsb-wireguard)
+   Compiling rsb-route v0.1.0 (D:\morust\rsbox\crates\rsb-route)
+   Compiling rsb-protocol v0.1.0 (D:\morust\rsbox\crates\rsb-protocol)
+warning: unused import: `std::time::Duration`
+   --> crates\rsb-protocol\src\inbound_proxy.rs:341:9
+    |
+341 |     use std::time::Duration;
+    |         ^^^^^^^^^^^^^^^^^^^
+    |
+    = note: `#[warn(unused_imports)]` (part of `#[warn(unused)]`) on by default
+
+warning: unused imports: `AsyncReadExt` and `AsyncWriteExt`
+   --> crates\rsb-protocol\src\inbound_proxy.rs:342:21
+    |
+342 |     use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    |                     ^^^^^^^^^^^^  ^^^^^^^^^^^^^
+
+warning: unused import: `Context`
+ --> crates\rsb-protocol\src\original_dest.rs:3:14
+  |
+3 | use anyhow::{Context, Result};
+  |              ^^^^^^^
+
+warning: unused imports: `Ipv4Addr` and `Ipv6Addr`
+ --> crates\rsb-protocol\src\original_dest.rs:4:16
+  |
+4 | use std::net::{Ipv4Addr, Ipv6Addr, SocketAddr};
+  |                ^^^^^^^^  ^^^^^^^^
+
+warning: unused import: `AsyncWriteExt`
+   --> crates\rsb-protocol\src\vmess.rs:375:35
+    |
+375 |     use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    |                                   ^^^^^^^^^^^^^
+
+warning: use of deprecated function `rand::thread_rng`: Renamed to `rng`
+   --> crates\rsb-protocol\src\hysteria2\client.rs:132:33
+    |
+132 |             let mut rng = rand::thread_rng();
+    |                                 ^^^^^^^^^^
+    |
+    = note: `#[warn(deprecated)]` on by default
+
+warning: use of deprecated function `rand::thread_rng`: Renamed to `rng`
+   --> crates\rsb-protocol\src\hysteria2\client.rs:180:45
+    |
+180 |                         let mut rng = rand::thread_rng();
+    |                                             ^^^^^^^^^^
+
+warning: use of deprecated method `rand::Rng::gen_range`: Renamed to `random_range`
+   --> crates\rsb-protocol\src\hysteria2\client.rs:184:33
+    |
+184 | ...                   rng.gen_range(start..=end)
+    |                           ^^^^^^^^^
+
+warning: variable does not need to be mutable
+   --> crates\rsb-protocol\src\inbound_proxy.rs:321:13
+    |
+321 |         let mut stream = reader.into_inner();
+    |             ----^^^^^^
+    |             |
+    |             help: remove this `mut`
+    |
+    = note: `#[warn(unused_mut)]` (part of `#[warn(unused)]`) on by default
+
+warning: variable does not need to be mutable
+   --> crates\rsb-protocol\src\inbound_proxy.rs:339:5
+    |
+339 |     mut domain: Option<String>,
+    |     ----^^^^^^
+    |     |
+    |     help: remove this `mut`
+
+warning: variable does not need to be mutable
+   --> crates\rsb-protocol\src\inbound_proxy.rs:365:9
+    |
+365 |     let mut remote = dialer.dial_tcp(&metadata, dest).await?;
+    |         ----^^^^^^
+    |         |
+    |         help: remove this `mut`
+
+warning: use of deprecated method `rand::Rng::gen_range`: Renamed to `random_range`
+   --> crates\rsb-protocol\src\hysteria2\client.rs:133:17
+    |
+133 |             rng.gen_range(start..=end)
+    |                 ^^^^^^^^^
+
+warning: unused import: `AsyncReadExt`
+  --> crates\rsb-protocol\src\hysteria2\client.rs:14:17
+   |
+14 | use tokio::io::{AsyncReadExt, AsyncWriteExt};
+   |                 ^^^^^^^^^^^^
+
+warning: unused import: `AsyncWriteExt`
+  --> crates\rsb-protocol\src\hysteria2\client.rs:14:31
+   |
+14 | use tokio::io::{AsyncReadExt, AsyncWriteExt};
+   |                               ^^^^^^^^^^^^^
+
+warning: unused import: `Digest`
+ --> crates\rsb-protocol\src\reality.rs:9:12
+  |
+9 | use sha2::{Digest, Sha256};
+  |            ^^^^^^
+
+warning: unused import: `aes_gcm::aead::KeyInit`
+   --> crates\rsb-protocol\src\vmess.rs:168:9
+    |
+168 |     use aes_gcm::aead::KeyInit;
+    |         ^^^^^^^^^^^^^^^^^^^^^^
+
+warning: unused import: `tokio::io::AsyncWriteExt`
+   --> crates\rsb-protocol\src\tailscale_control.rs:108:9
+    |
+108 |     use tokio::io::AsyncWriteExt;
+    |         ^^^^^^^^^^^^^^^^^^^^^^^^
+
+warning: unused import: `KeyInit`
+ --> crates\rsb-protocol\src\tailscale_noise.rs:6:36
+  |
+6 | use chacha20poly1305::aead::{Aead, KeyInit, Payload};
+  |                                    ^^^^^^^
+
+warning: unused import: `AsyncWriteExt`
+  --> crates\rsb-protocol\src\tuic.rs:10:31
+   |
+10 | use tokio::io::{AsyncReadExt, AsyncWriteExt};
+   |                               ^^^^^^^^^^^^^
+
+warning: unused import: `AsyncReadExt`
+  --> crates\rsb-protocol\src\tuic.rs:10:17
+   |
+10 | use tokio::io::{AsyncReadExt, AsyncWriteExt};
+   |                 ^^^^^^^^^^^^
+
+warning: unused import: `rsb_core::ProxyUdpIo`
+   --> crates\rsb-protocol\src\tun_mode.rs:173:9
+    |
+173 |     use rsb_core::ProxyUdpIo;
+    |         ^^^^^^^^^^^^^^^^^^^^
+
+warning: unused variable: `stream`
+   --> crates\rsb-protocol\src\inbound_proxy.rs:321:13
+    |
+321 |         let mut stream = reader.into_inner();
+    |             ^^^^^^^^^^ help: if this is intentional, prefix it with an underscore: `_stream`
+    |
+    = note: `#[warn(unused_variables)]` (part of `#[warn(unused)]`) on by default
+
+warning: value assigned to `cursor` is never read
+   --> crates\rsb-protocol\src\vless.rs:309:5
+    |
+309 |     cursor = &cursor[consumed..];
+    |     ^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+    |
+    = help: maybe it is overwritten before being read?
+    = note: `#[warn(unused_assignments)]` (part of `#[warn(unused)]`) on by default
+
+warning: value assigned to `cursor` is never read
+   --> crates\rsb-protocol\src\xudp.rs:195:9
+    |
+195 |         cursor = &cursor[8..];
+    |         ^^^^^^^^^^^^^^^^^^^^^
+    |
+    = help: maybe it is overwritten before being read?
+
+warning: type `SymmetricState` is more private than the item `client_finish`
+   --> crates\rsb-protocol\src\tailscale_noise.rs:222:1
+    |
+222 | / pub fn client_finish(
+223 | |     mut s: SymmetricState,
+224 | |     eph_sk: &StaticSecret,
+225 | |     machine_key: &StaticSecret,
+226 | |     control_key: &[u8; 32],
+227 | |     response: &[u8],
+228 | | ) -> Result<NoiseConn> {
+    | |______________________^ function `client_finish` is reachable at visibility `pub`
+    |
+note: but type `SymmetricState` is only usable at visibility `pub(self)`
+   --> crates\rsb-protocol\src\tailscale_noise.rs:49:1
+    |
+ 49 | struct SymmetricState {
+    | ^^^^^^^^^^^^^^^^^^^^^
+    = note: `#[warn(private_interfaces)]` on by default
+
+warning: type `SymmetricState` is more private than the item `client_state_for_finish`
+   --> crates\rsb-protocol\src\tailscale_noise.rs:255:1
+    |
+255 | / pub fn client_state_for_finish(
+256 | |     machine_key: &StaticSecret,
+257 | |     control_key: &[u8; 32],
+258 | |     protocol_version: u16,
+259 | |     eph_sk: &StaticSecret,
+260 | |     eph_pk: &PublicKey,
+261 | | ) -> SymmetricState {
+    | |___________________^ function `client_state_for_finish` is reachable at visibility `pub`
+    |
+note: but type `SymmetricState` is only usable at visibility `pub(self)`
+   --> crates\rsb-protocol\src\tailscale_noise.rs:49:1
+    |
+ 49 | struct SymmetricState {
+    | ^^^^^^^^^^^^^^^^^^^^^
+
+warning: field `dest` is never read
+  --> crates\rsb-protocol\src\dns_outbound.rs:66:5
+   |
+64 | struct UdpDial {
+   |        ------- field in this struct
+65 |     socket: UdpSocket,
+66 |     dest: SocketAddr,
+   |     ^^^^
+   |
+   = note: `#[warn(dead_code)]` (part of `#[warn(unused)]`) on by default
+
+warning: field `tag` is never read
+  --> crates\rsb-protocol\src\endpoints.rs:11:5
+   |
+10 | pub struct WireGuardEndpoint {
+   |            ----------------- field in this struct
+11 |     tag: String,
+   |     ^^^
+
+warning: field `router` is never read
+  --> crates\rsb-protocol\src\engine.rs:20:5
+   |
+16 | pub struct RsBox {
+   |            ----- field in this struct
+...
+20 |     router: Arc<dyn Router>,
+   |     ^^^^^^
+
+warning: field `client_rx_bps` is never read
+  --> crates\rsb-protocol\src\hysteria2\auth.rs:10:9
+   |
+ 8 | pub struct AuthRequest {
+   |            ----------- field in this struct
+ 9 |     pub password: String,
+10 |     pub client_rx_bps: u64,
+   |         ^^^^^^^^^^^^^
+
+warning: struct `AuthResponse` is never constructed
+  --> crates\rsb-protocol\src\hysteria2\auth.rs:13:12
+   |
+13 | pub struct AuthResponse {
+   |            ^^^^^^^^^^^^
+
+warning: fields `port` and `down_mbps` are never read
+  --> crates\rsb-protocol\src\hysteria2\client.rs:21:5
+   |
+18 | pub struct Hysteria2Outbound {
+   |            ----------------- fields in this struct
+...
+21 |     port: u16,                      // 保留用于单端口模式
+   |     ^^^^
+...
+28 |     down_mbps: u32,
+   |     ^^^^^^^^^
+
+warning: methods `next_port` and `start_port_hopping` are never used
+   --> crates\rsb-protocol\src\hysteria2\client.rs:125:8
+    |
+ 38 | impl Hysteria2Outbound {
+    | ---------------------- methods in this implementation
+...
+125 |     fn next_port(&self) -> u16 {
+    |        ^^^^^^^^^
+...
+140 |     fn start_port_hopping(self: Arc<Self>) {
+    |        ^^^^^^^^^^^^^^^^^^
+
+warning: field `up_mbps` is never read
+  --> crates\rsb-protocol\src\hysteria2\server.rs:21:9
+   |
+16 | pub struct Hy2ServerConfig {
+   |            --------------- field in this struct
+...
+21 |     pub up_mbps: u32,
+   |         ^^^^^^^
+   |
+   = note: `Hy2ServerConfig` has a derived impl for the trait `Clone`, but this is intentionally ignored during dead code analysis
+
+warning: function `handle_http_proxy` is never used
+   --> crates\rsb-protocol\src\inbound_proxy.rs:544:10
+    |
+544 | async fn handle_http_proxy(
+    |          ^^^^^^^^^^^^^^^^^
+
+warning: function `parse_http_url` is never used
+   --> crates\rsb-protocol\src\inbound_proxy.rs:592:4
+    |
+592 | fn parse_http_url(url: &str) -> Result<(String, u16, String)> {
+    |    ^^^^^^^^^^^^^^
+
+warning: function `rewrite_http_request` is never used
+   --> crates\rsb-protocol\src\inbound_proxy.rs:633:4
+    |
+633 | fn rewrite_http_request(
+    |    ^^^^^^^^^^^^^^^^^^^^
+
+warning: method `connect_tunnel` is never used
+   --> crates\rsb-protocol\src\legacy.rs:67:22
+    |
+ 22 |         impl $name {
+    |         ---------- method in this implementation
+...
+ 67 |             async fn connect_tunnel(&self) -> Result<ProxyConn> {
+    |                      ^^^^^^^^^^^^^^
+...
+118 | tls_tunnel_outbound!(HysteriaOutbound, rsb_constant::TYPE_HYSTERIA);
+    | ------------------------------------------------------------------- in this macro invocation
+    |
+    = note: this warning originates in the macro `tls_tunnel_outbound` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+warning: method `connect_tunnel` is never used
+   --> crates\rsb-protocol\src\legacy.rs:67:22
+    |
+ 22 |         impl $name {
+    |         ---------- method in this implementation
+...
+ 67 |             async fn connect_tunnel(&self) -> Result<ProxyConn> {
+    |                      ^^^^^^^^^^^^^^
+...
+119 | tls_tunnel_outbound!(ShadowTlsOutbound, rsb_constant::TYPE_SHADOWTLS);
+    | --------------------------------------------------------------------- in this macro invocation
+    |
+    = note: this warning originates in the macro `tls_tunnel_outbound` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+warning: method `connect_tunnel` is never used
+   --> crates\rsb-protocol\src\legacy.rs:67:22
+    |
+ 22 |         impl $name {
+    |         ---------- method in this implementation
+...
+ 67 |             async fn connect_tunnel(&self) -> Result<ProxyConn> {
+    |                      ^^^^^^^^^^^^^^
+...
+120 | tls_tunnel_outbound!(AnyTlsOutbound, rsb_constant::TYPE_ANYTLS);
+    | --------------------------------------------------------------- in this macro invocation
+    |
+    = note: this warning originates in the macro `tls_tunnel_outbound` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+warning: method `connect_tunnel` is never used
+   --> crates\rsb-protocol\src\legacy.rs:67:22
+    |
+ 22 |         impl $name {
+    |         ---------- method in this implementation
+...
+ 67 |             async fn connect_tunnel(&self) -> Result<ProxyConn> {
+    |                      ^^^^^^^^^^^^^^
+...
+121 | tls_tunnel_outbound!(NaiveOutbound, rsb_constant::TYPE_NAIVE);
+    | ------------------------------------------------------------- in this macro invocation
+    |
+    = note: this warning originates in the macro `tls_tunnel_outbound` (in Nightly builds, run with -Z macro-backtrace for more info)
+
+warning: constant `LINUX_SO_ORIGINAL_DST` is never used
+ --> crates\rsb-protocol\src\original_dest.rs:7:7
+  |
+7 | const LINUX_SO_ORIGINAL_DST: libc::c_int = 80;
+  |       ^^^^^^^^^^^^^^^^^^^^^
+
+warning: fields `tag` and `kind` are never read
+  --> crates\rsb-protocol\src\services\mod.rs:27:16
+   |
+26 | pub struct ServiceHandle {
+   |            ------------- fields in this struct
+27 |     pub(crate) tag: String,
+   |                ^^^
+28 |     pub(crate) kind: String,
+   |                ^^^^
+
+warning: constant `FRAME_RECV_PACKET` is never used
+  --> crates\rsb-protocol\src\services\derp.rs:28:7
+   |
+28 | const FRAME_RECV_PACKET: u8 = 0x05;
+   |       ^^^^^^^^^^^^^^^^^
+
+warning: constant `FRAME_NOTE_PREFERRED` is never used
+  --> crates\rsb-protocol\src\services\derp.rs:30:7
+   |
+30 | const FRAME_NOTE_PREFERRED: u8 = 0x07;
+   |       ^^^^^^^^^^^^^^^^^^^^
+
+warning: field `config_path` is never read
+  --> crates\rsb-protocol\src\services\derp.rs:39:5
+   |
+34 | pub struct DerpService {
+   |            ----------- field in this struct
+...
+39 |     config_path: String,
+   |     ^^^^^^^^^^^
+
+warning: function `build_register_token` is never used
+   --> crates\rsb-protocol\src\services\hysteria_realm.rs:158:8
+    |
+158 | pub fn build_register_token(secret: &[u8], realm: &str, id: &[u8]) -> Vec<u8> {
+    |        ^^^^^^^^^^^^^^^^^^^^
+
+warning: field `reality_verified` is never read
+  --> crates\rsb-protocol\src\utls\tls13.rs:26:5
+   |
+17 | pub struct UtlsTlsStream {
+   |            ------------- field in this struct
+...
+26 |     reality_verified: bool,
+   |     ^^^^^^^^^^^^^^^^
+
+   Compiling rsb-api v0.1.0 (D:\morust\rsbox\crates\rsb-api)
+warning: `rsb-protocol` (lib) generated 48 warnings (run `cargo fix --lib -p rsb-protocol` to apply 9 suggestions)
+   Compiling rsbox v0.1.0 (D:\morust\rsbox\rsbox)
+   Compiling rsb-libbox v0.1.0 (D:\morust\rsbox\crates\rsb-libbox)
+    Finished `release` profile [optimized] target(s) in 2m 28s
