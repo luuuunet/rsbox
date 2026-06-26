@@ -88,7 +88,11 @@ impl Outbound for ShadowsocksOutbound {
     fn networks(&self) -> &[Network] {
         &[Network::Tcp, Network::Udp]
     }
-    async fn dial_tcp(&self, destination: SocketAddr, _domain: Option<&str>) -> Result<ProxyConn, BoxError> {
+    async fn dial_tcp(
+        &self,
+        destination: SocketAddr,
+        _domain: Option<&str>,
+    ) -> Result<ProxyConn, BoxError> {
         let stream = ProxyClientStream::connect(
             ss_client_context(),
             &self.server_config,

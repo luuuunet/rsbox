@@ -62,7 +62,11 @@ impl Outbound for SocksOutbound {
         &[Network::Tcp, Network::Udp]
     }
 
-    async fn dial_tcp(&self, destination: SocketAddr, _domain: Option<&str>) -> Result<ProxyConn, BoxError> {
+    async fn dial_tcp(
+        &self,
+        destination: SocketAddr,
+        _domain: Option<&str>,
+    ) -> Result<ProxyConn, BoxError> {
         let mut stream = self.connect_proxy().await?;
         socks::socks5_connect(
             &mut stream,

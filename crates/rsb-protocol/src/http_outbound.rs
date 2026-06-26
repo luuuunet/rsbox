@@ -52,7 +52,11 @@ impl Outbound for HttpOutbound {
     fn networks(&self) -> &[Network] {
         &[Network::Tcp]
     }
-    async fn dial_tcp(&self, destination: SocketAddr, _domain: Option<&str>) -> Result<ProxyConn, BoxError> {
+    async fn dial_tcp(
+        &self,
+        destination: SocketAddr,
+        _domain: Option<&str>,
+    ) -> Result<ProxyConn, BoxError> {
         let use_tls = self
             .tls
             .as_ref()

@@ -18,11 +18,11 @@ static SESSION_COUNTER: AtomicU32 = AtomicU32::new(1);
 pub struct Hysteria2Outbound {
     tag: String,
     server: String,
-    port: u16,  // 保留用于单端口模式
-    port_start: Option<u16>,  // 🔧 端口跳跃：范围起始
-    port_end: Option<u16>,    // 🔧 端口跳跃：范围结束
-    hop_interval: Option<Duration>,  // 🔧 端口跳跃：跳跃间隔
-    current_port: Arc<AtomicU16>,    // 🔧 端口跳跃：当前使用的端口
+    port: u16,                      // 保留用于单端口模式
+    port_start: Option<u16>,        // 🔧 端口跳跃：范围起始
+    port_end: Option<u16>,          // 🔧 端口跳跃：范围结束
+    hop_interval: Option<Duration>, // 🔧 端口跳跃：跳跃间隔
+    current_port: Arc<AtomicU16>,   // 🔧 端口跳跃：当前使用的端口
     password: String,
     up_mbps: u32,
     down_mbps: u32,
@@ -49,15 +49,18 @@ impl Hysteria2Outbound {
             if let Some(ports_str) = server_ports.as_str() {
                 // 解析端口范围：666-766
                 if let Some((start, end)) = ports_str.split_once('-') {
-                    let start_port = start.trim().parse::<u16>()
+                    let start_port = start
+                        .trim()
+                        .parse::<u16>()
                         .context("invalid port range start")?;
-                    let end_port = end.trim().parse::<u16>()
+                    let end_port = end
+                        .trim()
+                        .parse::<u16>()
                         .context("invalid port range end")?;
                     (start_port, Some(start_port), Some(end_port))
                 } else {
                     // 单端口：666
-                    let single_port = ports_str.parse::<u16>()
-                        .context("invalid port")?;
+                    let single_port = ports_str.parse::<u16>().context("invalid port")?;
                     (single_port, None, None)
                 }
             } else {
@@ -73,7 +76,8 @@ impl Hysteria2Outbound {
         };
 
         // 🔧 端口跳跃：解析 hop_interval
-        let hop_interval = raw.get("hop_interval")
+        let hop_interval = raw
+            .get("hop_interval")
             .and_then(|v| v.as_str())
             .and_then(|s| {
                 // 解析 "30s" 格式
@@ -95,7 +99,7 @@ impl Hysteria2Outbound {
             port_start,
             port_end,
             hop_interval,
-            current_port: Arc::new(AtomicU16::new(port)),  // 🔧 初始化当前端口
+            current_port: Arc::new(AtomicU16::new(port)), // 🔧 初始化当前端口
             password: raw
                 .get("password")
                 .and_then(|v| v.as_str())
@@ -310,7 +314,11 @@ impl Outbound for Hysteria2Outbound {
     fn networks(&self) -> &[Network] {
         &[Network::Tcp, Network::Udp]
     }
-    async fn dial_tcp(&self, destination: SocketAddr, domain: Option<&str>) -> Result<ProxyConn, BoxError> {
+    async fn dial_tcp(
+        &self,
+        destination: SocketAddr,
+        domain: Option<&str>,
+    ) -> Result<ProxyConn, BoxError> {
         let conn = self.get_connection().await?;
         let (mut send, mut recv) = conn.open_bi().await.context("open hy2 stream")?;
 

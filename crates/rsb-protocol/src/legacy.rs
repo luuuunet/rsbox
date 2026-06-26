@@ -89,7 +89,11 @@ macro_rules! tls_tunnel_outbound {
             fn networks(&self) -> &[Network] {
                 &[Network::Tcp]
             }
-            async fn dial_tcp(&self, destination: SocketAddr, _domain: Option<&str>) -> Result<ProxyConn, BoxError> {
+            async fn dial_tcp(
+                &self,
+                destination: SocketAddr,
+                _domain: Option<&str>,
+            ) -> Result<ProxyConn, BoxError> {
                 self.connect(destination).await.map_err(Into::into)
             }
             async fn dial_udp(&self, _destination: SocketAddr) -> Result<ProxyUdpSocket, BoxError> {
@@ -190,7 +194,11 @@ impl Outbound for SshOutbound {
     fn networks(&self) -> &[Network] {
         &[Network::Tcp]
     }
-    async fn dial_tcp(&self, destination: SocketAddr, _domain: Option<&str>) -> Result<ProxyConn, BoxError> {
+    async fn dial_tcp(
+        &self,
+        destination: SocketAddr,
+        _domain: Option<&str>,
+    ) -> Result<ProxyConn, BoxError> {
         self.pool.dial_tcp(destination, None).await
     }
     async fn dial_udp(&self, _: SocketAddr) -> Result<ProxyUdpSocket, BoxError> {
@@ -235,7 +243,11 @@ impl Outbound for TorOutbound {
     fn networks(&self) -> &[Network] {
         &[Network::Tcp]
     }
-    async fn dial_tcp(&self, destination: SocketAddr, _domain: Option<&str>) -> Result<ProxyConn, BoxError> {
+    async fn dial_tcp(
+        &self,
+        destination: SocketAddr,
+        _domain: Option<&str>,
+    ) -> Result<ProxyConn, BoxError> {
         let mut stream = transport::tcp_connect(&self.server, self.port).await?;
         crate::socks::socks::socks5_connect(&mut stream, destination, None, None).await?;
         Ok(tcp_stream(stream))

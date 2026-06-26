@@ -56,7 +56,11 @@ pub trait Outbound: Send + Sync {
     fn tag(&self) -> &str;
     fn kind(&self) -> &str;
     fn networks(&self) -> &[Network];
-    async fn dial_tcp(&self, destination: SocketAddr, domain: Option<&str>) -> Result<ProxyConn, BoxError>;
+    async fn dial_tcp(
+        &self,
+        destination: SocketAddr,
+        domain: Option<&str>,
+    ) -> Result<ProxyConn, BoxError>;
     async fn dial_udp(&self, destination: SocketAddr) -> Result<ProxyUdpSocket, BoxError>;
     async fn close(&self) -> Result<(), BoxError>;
 }

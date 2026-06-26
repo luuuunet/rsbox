@@ -66,7 +66,11 @@ impl Outbound for WireGuardOutbound {
     fn networks(&self) -> &[Network] {
         &[Network::Tcp, Network::Udp]
     }
-    async fn dial_tcp(&self, destination: SocketAddr, _domain: Option<&str>) -> Result<ProxyConn, BoxError> {
+    async fn dial_tcp(
+        &self,
+        destination: SocketAddr,
+        _domain: Option<&str>,
+    ) -> Result<ProxyConn, BoxError> {
         self.ensure_started().await?;
         let stream = rsb_core::tcp_connect_via(destination, Some(&self.interface_name)).await?;
         Ok(tcp_stream(stream))
