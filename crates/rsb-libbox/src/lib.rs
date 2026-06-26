@@ -26,6 +26,82 @@ fn cstr_to_string(ptr: *const c_char) -> anyhow::Result<String> {
         .into_owned())
 }
 
+async fn start_from_options(
+    options: rsb_config::Options,
+) -> anyhow::Result<(
+    RsBox,
+    ClashApiServer,
+    Option<V2RayApiServer>,
+    Option<CacheFileService>,
+)> {
+    tracing_subscriber::fmt()
+        .with_env_filter(tracing_subscriber::EnvFilter::new(&options.log.level))
+        .try_init()
+        .ok();
+    let mut cache = None;
+    if let Some(exp) = &options.experimental {
+        if let Some(cfg) = &exp.cache_file {
+            cache = Some(CacheFileService::start(cfg).await?);
+        }
+    }
+    let instance = RsBox::new(options.clone()).await?;
+    if let Some(cache_svc) = cache.as_ref() {
+        instance
+            .controller()
+            .restore_selectors(&cache_svc.selectors());
+    }
+    let cache_arc = cache.clone();
+    let mut clash = ClashApiServer::new();
+    let mut v2ray = None;
+    if let Some(exp) = &options.experimental {
+        if let Some(api) = &exp.clash_api {
+            clash
+                .start(
+                    api,
+                    instance.controller(),
+                    instance.connections(),
+                    cache_arc.map(std::sync::Arc::new),
+                )
+                .await?;
+        }
+        if let Some(cfg) = &exp.v2ray_api {
+            v2ray = Some(V2RayApiServer::start(cfg, instance.connections()).await?);
+        }
+    }
+    instance.start().await?;
+    Ok((instance, clash, v2ray, cache))
+}
+
+fn start_with_options(options: rsb_config::Options) -> i32 {
+    let mut guard = match STATE.lock() {
+        Ok(g) => g,
+        Err(_) => return -2,
+    };
+    if guard.is_some() {
+        return -3;
+    }
+    let runtime = match Runtime::new() {
+        Ok(rt) => rt,
+        Err(_) => return -4,
+    };
+    match runtime.block_on(start_from_options(options)) {
+        Ok((instance, clash, v2ray, cache)) => {
+            *guard = Some(LibBoxState {
+                runtime,
+                instance: Some(instance),
+                clash,
+                v2ray,
+                cache,
+            });
+            0
+        },
+        Err(err) => {
+            tracing::error!(error = %err, "rsbox start failed");
+            -5
+        },
+    }
+}
+
 /// Returns rsbox version string (static, do not free).
 #[no_mangle]
 pub extern "C" fn rsbox_version() -> *const c_char {
@@ -68,42 +144,7 @@ pub extern "C" fn rsbox_start(config_path: *const c_char) -> i32 {
     let result = runtime.block_on(async {
         let text = tokio::fs::read_to_string(&path).await?;
         let options = rsb_config::Options::from_json(&text)?;
-        tracing_subscriber::fmt()
-            .with_env_filter(tracing_subscriber::EnvFilter::new(&options.log.level))
-            .try_init()
-            .ok();
-        let mut cache = None;
-        if let Some(exp) = &options.experimental {
-            if let Some(cfg) = &exp.cache_file {
-                cache = Some(CacheFileService::start(cfg).await?);
-            }
-        }
-        let instance = RsBox::new(options.clone()).await?;
-        if let Some(cache_svc) = cache.as_ref() {
-            instance
-                .controller()
-                .restore_selectors(&cache_svc.selectors());
-        }
-        let cache_arc = cache.clone();
-        let mut clash = ClashApiServer::new();
-        let mut v2ray = None;
-        if let Some(exp) = &options.experimental {
-            if let Some(api) = &exp.clash_api {
-                clash
-                    .start(
-                        api,
-                        instance.controller(),
-                        instance.connections(),
-                        cache_arc.map(std::sync::Arc::new),
-                    )
-                    .await?;
-            }
-            if let Some(cfg) = &exp.v2ray_api {
-                v2ray = Some(V2RayApiServer::start(cfg, instance.connections()).await?);
-            }
-        }
-        instance.start().await?;
-        Ok::<_, anyhow::Error>((instance, clash, v2ray, cache))
+        start_from_options(options).await
     });
     match result {
         Ok((instance, clash, v2ray, cache)) => {
@@ -121,6 +162,17 @@ pub extern "C" fn rsbox_start(config_path: *const c_char) -> i32 {
             -5
         },
     }
+}
+
+/// Start rsbox from in-memory config JSON (preferred on Android/iOS).
+#[no_mangle]
+pub extern "C" fn rsbox_start_config(config_json: *const c_char) -> i32 {
+    let options =
+        match cstr_to_string(config_json).and_then(|text| rsb_config::Options::from_json(&text)) {
+            Ok(opts) => opts,
+            Err(_) => return -1,
+        };
+    start_with_options(options)
 }
 
 /// Stop rsbox if running.

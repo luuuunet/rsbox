@@ -2,9 +2,11 @@
 
 use crate::build_context::BuildContext;
 use crate::group::OutboundController;
+#[cfg(feature = "desktop")]
+use crate::tun_mode;
 use crate::{
     direct, dns_inbound, dns_outbound, group, http_outbound, hysteria2, inbound_proxy, legacy,
-    legacy_inbound, shadowsocks, socks, trojan, tuic, tun_mode, vless, vmess, wireguard_outbound,
+    legacy_inbound, shadowsocks, socks, trojan, tuic, vless, vmess, wireguard_outbound,
 };
 use anyhow::{bail, Result};
 use rsb_config::{Inbound, Outbound};
@@ -54,6 +56,7 @@ pub fn build_outbound(
         TYPE_SHADOWTLS => Box::new(legacy::ShadowTlsOutbound::new(tag, ob.raw.clone())?),
         TYPE_ANYTLS => Box::new(legacy::AnyTlsOutbound::new(tag, ob.raw.clone())?),
         TYPE_NAIVE => Box::new(legacy::NaiveOutbound::new(tag, ob.raw.clone())?),
+        #[cfg(feature = "desktop")]
         TYPE_SSH => Box::new(legacy::SshOutbound::new(tag, ob.raw.clone())?),
         TYPE_TOR => Box::new(legacy::TorOutbound::new(tag, ob.raw.clone())?),
         TYPE_WIREGUARD => Box::new(wireguard_outbound::WireGuardOutbound::new(
@@ -101,18 +104,21 @@ pub fn build_inbound(
         TYPE_VLESS => Box::new(vless::VlessInbound::new(tag, ib.raw.clone())?),
         TYPE_VMESS => Box::new(vmess::VmessInbound::new(tag, ib.raw.clone())?),
         TYPE_TUIC => Box::new(tuic::TuicInbound::new(tag, ib.raw.clone())?),
+        #[cfg(feature = "desktop")]
         TYPE_TUN => Box::new(tun_mode::TunInbound::new(
             tag,
             ib.raw.clone(),
             dialer.clone(),
             ctx.dns.clone(),
         )?),
+        #[cfg(feature = "desktop")]
         TYPE_REDIRECT => Box::new(tun_mode::RedirectInbound::new(
             tag,
             ib.raw.clone(),
             dialer.clone(),
             ctx.dns.clone(),
         )?),
+        #[cfg(feature = "desktop")]
         TYPE_TPROXY => Box::new(tun_mode::TproxyInbound::new(
             tag,
             ib.raw.clone(),

@@ -21,6 +21,7 @@ pub mod services;
 pub mod shadowsocks;
 pub mod sniff;
 pub mod socks;
+#[cfg(feature = "desktop")]
 pub mod ssh_client;
 pub mod tailscale_control;
 pub mod tailscale_embedded;
@@ -28,6 +29,7 @@ pub mod tailscale_noise;
 pub mod transport;
 pub mod trojan;
 pub mod tuic;
+#[cfg(feature = "desktop")]
 pub mod tun_mode;
 pub mod udp_over_tcp;
 pub mod urltest;

@@ -1,6 +1,6 @@
-# Experimental mobile builds — manual trigger only.
-# Desktop CLI (rsbox) is not suitable for Android/iOS; this builds rsb-libbox.
-name: Mobile Builds (Experimental)
+# Mobile library builds (rsb-libbox) — manual trigger.
+# Builds a slim proxy core without desktop-only deps (TUN, SSH/openssl, ipstack).
+name: Mobile Builds
 
 on:
   workflow_dispatch:
@@ -14,7 +14,7 @@ permissions:
 
 jobs:
   build-android:
-    name: Build Android (${{ matrix.target }})
+    name: Android (${{ matrix.arch }})
     runs-on: ubuntu-latest
     strategy:
       fail-fast: false
@@ -58,9 +58,50 @@ jobs:
         run: |
           mkdir -p dist
           cp "target/${{ matrix.target }}/release/librsb_libbox.so" "dist/librsb_libbox-android-${{ matrix.arch }}.so"
+          cp crates/rsb-libbox/include/rsbox.h dist/rsbox.h
 
       - name: Upload artifact
         uses: actions/upload-artifact@v4
         with:
           name: rsb-libbox-android-${{ matrix.arch }}
-          path: dist/librsb_libbox-android-${{ matrix.arch }}.so
+          path: dist/
+
+  build-ios:
+    name: iOS (${{ matrix.name }})
+    runs-on: macos-14
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - target: aarch64-apple-ios
+            name: device-arm64
+            lib: librsb_libbox.a
+          - target: x86_64-apple-ios
+            name: simulator-x86_64
+            lib: librsb_libbox.a
+          - target: aarch64-apple-ios-sim
+            name: simulator-arm64
+            lib: librsb_libbox.a
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Setup Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Build rsb-libbox
+        run: cargo build --release -p rsb-libbox --target ${{ matrix.target }}
+
+      - name: Prepare artifact
+        run: |
+          mkdir -p dist
+          cp "target/${{ matrix.target }}/release/${{ matrix.lib }}" "dist/librsb_libbox-ios-${{ matrix.name }}.a"
+          cp crates/rsb-libbox/include/rsbox.h dist/rsbox.h
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: rsb-libbox-ios-${{ matrix.name }}
+          path: dist/

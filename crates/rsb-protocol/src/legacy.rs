@@ -120,11 +120,13 @@ tls_tunnel_outbound!(ShadowTlsOutbound, rsb_constant::TYPE_SHADOWTLS);
 tls_tunnel_outbound!(AnyTlsOutbound, rsb_constant::TYPE_ANYTLS);
 tls_tunnel_outbound!(NaiveOutbound, rsb_constant::TYPE_NAIVE);
 
+#[cfg(feature = "desktop")]
 pub struct SshOutbound {
     tag: String,
     pool: std::sync::Arc<crate::ssh_client::SshSessionPool>,
 }
 
+#[cfg(feature = "desktop")]
 impl SshOutbound {
     pub fn new(tag: String, raw: Value) -> Result<Self> {
         let host_keys = raw
@@ -183,6 +185,7 @@ impl SshOutbound {
     }
 }
 
+#[cfg(feature = "desktop")]
 #[async_trait]
 impl Outbound for SshOutbound {
     fn tag(&self) -> &str {

@@ -9,8 +9,12 @@ anyhow.workspace = true
 axum.workspace = true
 rsb-config.workspace = true
 rsb-core.workspace = true
-rsb-protocol.workspace = true
+rsb-protocol = { workspace = true, default-features = false, features = ["quic"] }
 serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
 tokio.workspace = true
 tracing.workspace = true
+
+[features]
+default = ["desktop"]
+desktop = ["rsb-protocol/desktop"]

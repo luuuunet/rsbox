@@ -84,10 +84,10 @@ regex = "1"
 rsb-constant = { path = "crates/rsb-constant" }
 rsb-config = { path = "crates/rsb-config" }
 rsb-core = { path = "crates/rsb-core" }
-rsb-protocol = { path = "crates/rsb-protocol" }
+rsb-protocol = { path = "crates/rsb-protocol", default-features = true }
 rsb-route = { path = "crates/rsb-route" }
 rsb-dns = { path = "crates/rsb-dns" }
-rsb-api = { path = "crates/rsb-api" }
+rsb-api = { path = "crates/rsb-api", default-features = true }
 rsb-wireguard = { path = "crates/rsb-wireguard" }
 rsb-libbox = { path = "crates/rsb-libbox" }
 

@@ -70,3 +70,6 @@ jobs:
 
       - name: Build release
         run: cargo build --release -p rsbox
+
+      - name: Build mobile libbox
+        run: cargo build --release -p rsb-libbox
