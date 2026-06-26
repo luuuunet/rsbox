@@ -349,6 +349,7 @@ impl Inbound for VmessInbound {
                         let Ok((stream, _)) = accept else { break };
                         let users = users.clone();
                         tokio::spawn(async move {
+                            let mut stream = stream;
                             if let Err(err) = serve_vmess(stream, users).await {
                                 tracing::debug!(error = %err, "vmess client failed");
                             }
@@ -369,7 +370,7 @@ impl Inbound for VmessInbound {
     }
 }
 
-async fn serve_vmess(stream: TcpStream, users: Vec<Uuid>) -> Result<()> {
+async fn serve_vmess(mut stream: TcpStream, users: Vec<Uuid>) -> Result<()> {
     use aes_gcm::aead::{Aead, KeyInit};
     use aes_gcm::{Aes128Gcm, Nonce};
     use tokio::io::{AsyncReadExt, AsyncWriteExt};

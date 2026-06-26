@@ -254,6 +254,7 @@ impl Inbound for VlessInbound {
                         let acceptor = acceptor.clone();
                         let users = users.clone();
                         tokio::spawn(async move {
+                            let mut stream = stream;
                             if let Err(err) = serve_vless(stream, acceptor, users).await {
                                 tracing::debug!(error = %err, "vless client failed");
                             }
@@ -275,7 +276,7 @@ impl Inbound for VlessInbound {
 }
 
 async fn serve_vless(
-    stream: TcpStream,
+    mut stream: TcpStream,
     acceptor: tokio_rustls::TlsAcceptor,
     users: Vec<Uuid>,
 ) -> Result<()> {

@@ -25,6 +25,11 @@ pub struct MixedInbound {
     dns: Arc<DnsRouter>,
     shutdown: tokio::sync::watch::Sender<bool>,
     handle: tokio::sync::Mutex<Option<tokio::task::JoinHandle<()>>>,
+    // ✅ 新增配置支持
+    tcp_fast_open: bool,
+    tcp_multi_path: bool,
+    sniff: bool,
+    sniff_override_destination: bool,
 }
 
 impl MixedInbound {
@@ -41,6 +46,13 @@ impl MixedInbound {
             _ => ProxyMode::Mixed,
         };
         let (shutdown, _) = tokio::sync::watch::channel(false);
+
+        // ✅ 解析新增配置
+        let tcp_fast_open = raw.get("tcp_fast_open").and_then(|v| v.as_bool()).unwrap_or(false);
+        let tcp_multi_path = raw.get("tcp_multi_path").and_then(|v| v.as_bool()).unwrap_or(false);
+        let sniff = raw.get("sniff").and_then(|v| v.as_bool()).unwrap_or(false);
+        let sniff_override_destination = raw.get("sniff_override_destination").and_then(|v| v.as_bool()).unwrap_or(false);
+
         Ok(Self {
             tag,
             kind,
@@ -50,6 +62,10 @@ impl MixedInbound {
             dns,
             shutdown,
             handle: tokio::sync::Mutex::new(None),
+            tcp_fast_open,
+            tcp_multi_path,
+            sniff,
+            sniff_override_destination,
         })
     }
 }
@@ -63,13 +79,176 @@ impl Inbound for MixedInbound {
         &self.kind
     }
     async fn start(&self) -> Result<(), BoxError> {
-        let listener = TcpListener::bind(self.listen).await?;
-        tracing::info!(tag = %self.tag, %self.listen, kind = %self.kind, "inbound listening");
+        // ✅ 使用 socket2 创建 socket 并应用配置
+        use socket2::{Socket, Domain, Type, Protocol};
+
+        let socket = Socket::new(Domain::IPV4, Type::STREAM, Some(Protocol::TCP))?;
+
+        // ✅ 应用 TCP Fast Open
+        if self.tcp_fast_open {
+            #[cfg(target_os = "windows")]
+            {
+                use std::os::windows::io::AsRawSocket;
+                // Windows: TCP_FASTOPEN = 15
+                const TCP_FASTOPEN: i32 = 15;
+                let value: u32 = 1;
+                unsafe {
+                    let ret = windows_sys::Win32::Networking::WinSock::setsockopt(
+                        socket.as_raw_socket() as usize,
+                        windows_sys::Win32::Networking::WinSock::IPPROTO_TCP as i32,
+                        TCP_FASTOPEN,
+                        &value as *const _ as *const u8,
+                        std::mem::size_of::<u32>() as i32,
+                    );
+                    if ret != 0 {
+                        tracing::warn!("Failed to set TCP_FASTOPEN on Windows");
+                    }
+                }
+            }
+            #[cfg(target_os = "linux")]
+            {
+                use std::os::unix::io::AsRawFd;
+                // Linux: TCP_FASTOPEN = 23
+                const TCP_FASTOPEN: i32 = 23;
+                let value: i32 = 256;
+                unsafe {
+                    let ret = libc::setsockopt(
+                        socket.as_raw_fd(),
+                        libc::IPPROTO_TCP,
+                        TCP_FASTOPEN,
+                        &value as *const _ as *const libc::c_void,
+                        std::mem::size_of::<i32>() as libc::socklen_t,
+                    );
+                    if ret != 0 {
+                        tracing::warn!("Failed to set TCP_FASTOPEN on Linux");
+                    }
+                }
+            }
+            #[cfg(target_os = "macos")]
+            {
+                use std::os::unix::io::AsRawFd;
+                // macOS: TCP_FASTOPEN = 0x105
+                const TCP_FASTOPEN: i32 = 0x105;
+                let value: i32 = 1;
+                unsafe {
+                    let ret = libc::setsockopt(
+                        socket.as_raw_fd(),
+                        libc::IPPROTO_TCP,
+                        TCP_FASTOPEN,
+                        &value as *const _ as *const libc::c_void,
+                        std::mem::size_of::<i32>() as libc::socklen_t,
+                    );
+                    if ret != 0 {
+                        tracing::warn!("Failed to set TCP_FASTOPEN on macOS");
+                    }
+                }
+            }
+        }
+
+        // ✅ 应用 TCP Multi-Path (仅 Linux)
+        #[cfg(target_os = "linux")]
+        if !self.tcp_multi_path {
+            use std::os::unix::io::AsRawFd;
+            // MPTCP_ENABLED = 42
+            const MPTCP_ENABLED: i32 = 42;
+            let value: i32 = 0;
+            unsafe {
+                let _ = libc::setsockopt(
+                    socket.as_raw_fd(),
+                    libc::IPPROTO_TCP,
+                    MPTCP_ENABLED,
+                    &value as *const _ as *const libc::c_void,
+                    std::mem::size_of::<i32>() as libc::socklen_t,
+                );
+            }
+        }
+
+        socket.set_reuse_address(true)?;
+
+        // ✅ 启用 TCP Keep-Alive（保持长连接活跃，支持 WebSocket）
+        #[cfg(unix)]
+        {
+            use std::os::unix::io::AsRawFd;
+            let fd = socket.as_raw_fd();
+
+            // SO_KEEPALIVE = 1
+            let keepalive: libc::c_int = 1;
+            unsafe {
+                libc::setsockopt(
+                    fd,
+                    libc::SOL_SOCKET,
+                    libc::SO_KEEPALIVE,
+                    &keepalive as *const _ as *const libc::c_void,
+                    std::mem::size_of::<libc::c_int>() as libc::socklen_t,
+                );
+
+                // TCP_KEEPIDLE = 60 秒（开始发送 Keep-Alive 探测的空闲时间）
+                #[cfg(target_os = "linux")]
+                {
+                    let idle: libc::c_int = 60;
+                    libc::setsockopt(
+                        fd,
+                        libc::IPPROTO_TCP,
+                        libc::TCP_KEEPIDLE,
+                        &idle as *const _ as *const libc::c_void,
+                        std::mem::size_of::<libc::c_int>() as libc::socklen_t,
+                    );
+
+                    // TCP_KEEPINTVL = 10 秒（探测间隔）
+                    let interval: libc::c_int = 10;
+                    libc::setsockopt(
+                        fd,
+                        libc::IPPROTO_TCP,
+                        libc::TCP_KEEPINTVL,
+                        &interval as *const _ as *const libc::c_void,
+                        std::mem::size_of::<libc::c_int>() as libc::socklen_t,
+                    );
+                }
+            }
+        }
+
+        #[cfg(windows)]
+        {
+            use std::os::windows::io::AsRawSocket;
+            let sock = socket.as_raw_socket();
+
+            // SO_KEEPALIVE = 1
+            let keepalive: u32 = 1;
+            unsafe {
+                windows_sys::Win32::Networking::WinSock::setsockopt(
+                    sock as usize,
+                    windows_sys::Win32::Networking::WinSock::SOL_SOCKET,
+                    windows_sys::Win32::Networking::WinSock::SO_KEEPALIVE,
+                    &keepalive as *const _ as *const u8,
+                    std::mem::size_of::<u32>() as i32,
+                );
+            }
+        }
+
+        socket.bind(&self.listen.into())?;
+        socket.listen(1024)?;
+        socket.set_nonblocking(true)?;
+
+        let listener: std::net::TcpListener = socket.into();
+        let listener = TcpListener::from_std(listener)?;
+
+        tracing::info!(
+            tag = %self.tag,
+            %self.listen,
+            kind = %self.kind,
+            tcp_fast_open = %self.tcp_fast_open,
+            tcp_multi_path = %self.tcp_multi_path,
+            sniff = %self.sniff,
+            "inbound listening"
+        );
+
         let dialer = self.dialer.clone();
         let dns = self.dns.clone();
         let tag = self.tag.clone();
         let kind = self.kind.clone();
         let mode = self.mode;
+        let sniff = self.sniff;
+        let sniff_override = self.sniff_override_destination;
         let mut shutdown = self.shutdown.subscribe();
         let handle = tokio::spawn(async move {
             loop {
@@ -88,6 +267,8 @@ impl Inbound for MixedInbound {
                             if let Err(err) = handle_client(&mut stream, peer, &tag, &kind, mode, dialer, dns).await {
                                 tracing::debug!(error = %err, "proxy client failed");
                             }
+                            // ✅ 修复连接泄漏：确保连接被关闭
+                            let _ = stream.shutdown().await;
                         });
                     }
                 }
@@ -511,11 +692,21 @@ pub async fn relay_streams(
     b: &mut (impl tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin),
 ) -> Result<()> {
     tokio::io::copy_bidirectional(a, b).await?;
+
+    // ✅ 修复连接泄漏：显式关闭双向连接
+    let _ = tokio::io::AsyncWriteExt::shutdown(a).await;
+    let _ = tokio::io::AsyncWriteExt::shutdown(b).await;
+
     Ok(())
 }
 
 pub async fn relay_proxy(a: &mut TcpStream, mut b: ProxyConn) -> Result<()> {
     tokio::io::copy_bidirectional(a, b.as_mut()).await?;
+
+    // ✅ 修复连接泄漏：显式关闭双向连接
+    let _ = a.shutdown().await;
+    let _ = tokio::io::AsyncWriteExt::shutdown(b.as_mut()).await;
+
     Ok(())
 }
 

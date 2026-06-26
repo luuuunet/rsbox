@@ -184,6 +184,7 @@ impl Inbound for TrojanInbound {
                         let acceptor = acceptor.clone();
                         let users = users.clone();
                         tokio::spawn(async move {
+                            let mut stream = stream;
                             if let Err(err) = serve_trojan(stream, acceptor, users).await {
                                 tracing::debug!(error = %err, "trojan client failed");
                             }
@@ -227,7 +228,7 @@ pub fn build_tls_acceptor(cert: &str, key: &str) -> Result<tokio_rustls::TlsAcce
 }
 
 pub(crate) async fn serve_trojan(
-    stream: TcpStream,
+    mut stream: TcpStream,
     acceptor: tokio_rustls::TlsAcceptor,
     users: Vec<String>,
 ) -> Result<()> {

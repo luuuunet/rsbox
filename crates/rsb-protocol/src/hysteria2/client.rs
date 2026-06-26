@@ -19,7 +19,8 @@ struct Hy2Session {
     endpoint: Endpoint,
     connection: Arc<quinn::Connection>,
     port: u16,
-    _h3_keep_alive: (tokio::task::JoinHandle<()>, Box<dyn std::any::Any + Send>),
+    /// Keeps the H3 driver alive without closing the underlying QUIC connection.
+    _h3_keep_alive: tokio::task::JoinHandle<()>,
 }
 
 struct Hy2Shared {
@@ -46,6 +47,7 @@ pub struct Hysteria2Outbound {
     obfs: Option<Arc<obfs::Salamander>>,
     idle_timeout: Duration,
     keep_alive_period: Duration,
+    disable_mtu_discovery: bool,  // ✅ 新增配置
     shared: Arc<Hy2Shared>,
 }
 
@@ -127,6 +129,10 @@ impl Hysteria2Outbound {
                 .and_then(|v| v.as_str())
                 .and_then(parse_duration_str)
                 .unwrap_or(Duration::from_secs(10)),
+            disable_mtu_discovery: raw
+                .get("disable_mtu_discovery")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false),  // ✅ 解析配置
             shared: Arc::new(Hy2Shared {
                 session: tokio::sync::Mutex::new(None),
                 current_port: AtomicU16::new(port),
@@ -232,6 +238,13 @@ impl Hysteria2Outbound {
                 .try_into()
                 .map_err(|e| anyhow::anyhow!("invalid hysteria2 idle_timeout: {e}"))?,
         ));
+
+        // ✅ 应用 disable_mtu_discovery 配置
+        if !self.disable_mtu_discovery {
+            // 启用 MTU 发现
+            transport_cfg.mtu_discovery_config(Some(quinn::MtuDiscoveryConfig::default()));
+        }
+
         client_cfg.transport_config(Arc::new(transport_cfg));
 
         let addr = tokio::net::lookup_host(format!("{}:{}", self.server, port))
@@ -265,6 +278,7 @@ impl Hysteria2Outbound {
             port,
             idle_timeout_secs = self.idle_timeout.as_secs(),
             keep_alive_secs = self.keep_alive_period.as_secs(),
+            disable_mtu_discovery = self.disable_mtu_discovery,
             "hysteria2: session established"
         );
 
@@ -276,16 +290,9 @@ impl Hysteria2Outbound {
         })
     }
 
-    async fn authenticate(
-        &self,
-        connection: &quinn::Connection,
-    ) -> Result<(tokio::task::JoinHandle<()>, Box<dyn std::any::Any + Send>)> {
+    async fn authenticate(&self, connection: &quinn::Connection) -> Result<tokio::task::JoinHandle<()>> {
         let h3_conn = H3QuinnConnection::new(connection.clone());
         let (mut driver, mut send_request) = h3::client::new(h3_conn).await.context("h3 client")?;
-
-        let driver_handle = tokio::spawn(async move {
-            let _ = std::future::poll_fn(|cx| driver.poll_close(cx)).await;
-        });
 
         let mut req = Request::builder()
             .method("POST")
@@ -299,15 +306,35 @@ impl Hysteria2Outbound {
         }
         let padding = auth::random_padding(64, 512);
         req = req.header("hysteria-padding", padding.as_str());
-        let mut stream = send_request.send_request(req.body(())?).await?;
-        stream.finish().await?;
-        let resp = stream.recv_response().await?;
 
-        if resp.status() != StatusCode::from_u16(233).unwrap() {
-            anyhow::bail!("hysteria2 auth failed: {}", resp.status());
+        let auth_fut = async {
+            let mut stream = send_request.send_request(req.body(())?).await?;
+            stream.finish().await?;
+            let resp = stream.recv_response().await?;
+            if resp.status() != StatusCode::from_u16(233).unwrap() {
+                anyhow::bail!("hysteria2 auth failed: {}", resp.status());
+            }
+            Ok::<(), anyhow::Error>(())
+        };
+
+        tokio::pin!(auth_fut);
+
+        loop {
+            tokio::select! {
+                result = &mut auth_fut => {
+                    result?;
+                    // Hy2 data plane uses raw QUIC streams. Leak the H3 driver without
+                    // poll_close — graceful H3 shutdown closes the QUIC connection.
+                    std::mem::forget(driver);
+                    return Ok(tokio::spawn(async {
+                        std::future::pending::<()>().await
+                    }));
+                }
+                closed = std::future::poll_fn(|cx| driver.poll_close(cx)) => {
+                    anyhow::bail!("hysteria2: h3 connection closed during auth: {closed:?}");
+                }
+            }
         }
-
-        Ok((driver_handle, Box::new(send_request)))
     }
 
     async fn dial_tcp_inner(

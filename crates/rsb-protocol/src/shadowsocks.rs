@@ -203,6 +203,7 @@ impl Inbound for ShadowsocksInbound {
                         let Ok((stream, _)) = accept else { break };
                         let cfg = cfg.clone();
                         tokio::spawn(async move {
+                            let mut stream = stream;
                             if let Err(err) = serve_ss_client(stream, cfg).await {
                                 tracing::debug!(error = %err, "ss client failed");
                             }
@@ -223,7 +224,7 @@ impl Inbound for ShadowsocksInbound {
     }
 }
 
-async fn serve_ss_client(stream: TcpStream, server_config: Arc<ServerConfig>) -> Result<()> {
+async fn serve_ss_client(mut stream: TcpStream, server_config: Arc<ServerConfig>) -> Result<()> {
     let mut ss = ProxyServerStream::from_stream(
         ss_server_context(),
         stream,
