@@ -155,12 +155,10 @@ impl RtRequest {
             anyhow::bail!("netlink socket failed");
         }
         let sock = unsafe { socket2::Socket::from_raw_fd(fd) };
-        let _addr = libc::sockaddr_nl {
-            nl_family: libc::AF_NETLINK as u16,
-            nl_pad: Default::default(),
-            nl_pid: 0,
-            nl_groups: 0,
-        };
+        let mut _addr: libc::sockaddr_nl = unsafe { std::mem::zeroed() };
+        _addr.nl_family = libc::AF_NETLINK as u16;
+        _addr.nl_pid = 0;
+        _addr.nl_groups = 0;
 
         let ret = unsafe {
             libc::send(
