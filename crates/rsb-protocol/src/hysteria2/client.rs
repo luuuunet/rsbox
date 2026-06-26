@@ -8,7 +8,7 @@ use quinn::{ClientConfig, Endpoint, TransportConfig};
 use rsb_core::{BoxError, Network, Outbound, ProxyConn, ProxyUdpSocket, SplitProxy};
 use serde_json::Value;
 use std::net::SocketAddr;
-use std::sync::atomic::{AtomicU32, Ordering};
+use std::sync::atomic::{AtomicU16, AtomicU32, Ordering};
 use std::sync::Arc;
 use std::time::Duration;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
@@ -18,7 +18,11 @@ static SESSION_COUNTER: AtomicU32 = AtomicU32::new(1);
 pub struct Hysteria2Outbound {
     tag: String,
     server: String,
-    port: u16,
+    port: u16,  // 保留用于单端口模式
+    port_start: Option<u16>,  // 🔧 端口跳跃：范围起始
+    port_end: Option<u16>,    // 🔧 端口跳跃：范围结束
+    hop_interval: Option<Duration>,  // 🔧 端口跳跃：跳跃间隔
+    current_port: Arc<AtomicU16>,    // 🔧 端口跳跃：当前使用的端口
     password: String,
     up_mbps: u32,
     down_mbps: u32,
@@ -39,6 +43,47 @@ impl Hysteria2Outbound {
                 .and_then(|v| v.as_str())
                 .map(|p| Arc::new(obfs::Salamander::new(p)))
         });
+
+        // 🔧 端口跳跃：解析 server_ports
+        let (port, port_start, port_end) = if let Some(server_ports) = raw.get("server_ports") {
+            if let Some(ports_str) = server_ports.as_str() {
+                // 解析端口范围：666-766
+                if let Some((start, end)) = ports_str.split_once('-') {
+                    let start_port = start.trim().parse::<u16>()
+                        .context("invalid port range start")?;
+                    let end_port = end.trim().parse::<u16>()
+                        .context("invalid port range end")?;
+                    (start_port, Some(start_port), Some(end_port))
+                } else {
+                    // 单端口：666
+                    let single_port = ports_str.parse::<u16>()
+                        .context("invalid port")?;
+                    (single_port, None, None)
+                }
+            } else {
+                return Err(anyhow::anyhow!("server_ports must be string"));
+            }
+        } else {
+            // 兼容旧配置：server_port
+            let port = raw
+                .get("server_port")
+                .and_then(|v| v.as_u64())
+                .context("hysteria2: server_port required")? as u16;
+            (port, None, None)
+        };
+
+        // 🔧 端口跳跃：解析 hop_interval
+        let hop_interval = raw.get("hop_interval")
+            .and_then(|v| v.as_str())
+            .and_then(|s| {
+                // 解析 "30s" 格式
+                if let Some(secs) = s.strip_suffix('s') {
+                    secs.parse::<u64>().ok().map(Duration::from_secs)
+                } else {
+                    None
+                }
+            });
+
         Ok(Self {
             tag,
             server: raw
@@ -46,10 +91,11 @@ impl Hysteria2Outbound {
                 .and_then(|v| v.as_str())
                 .context("hysteria2: server required")?
                 .to_string(),
-            port: raw
-                .get("server_port")
-                .and_then(|v| v.as_u64())
-                .context("hysteria2: server_port required")? as u16,
+            port,
+            port_start,
+            port_end,
+            hop_interval,
+            current_port: Arc::new(AtomicU16::new(port)),  // 🔧 初始化当前端口
             password: raw
                 .get("password")
                 .and_then(|v| v.as_str())
@@ -71,7 +117,76 @@ impl Hysteria2Outbound {
         })
     }
 
+    // 🔧 端口跳跃：选择下一个端口
+    fn next_port(&self) -> u16 {
+        if let (Some(start), Some(end)) = (self.port_start, self.port_end) {
+            if start == end {
+                return start;
+            }
+            // 随机选择端口范围内的端口
+            use rand::Rng;
+            let mut rng = rand::thread_rng();
+            rng.gen_range(start..=end)
+        } else {
+            self.port
+        }
+    }
+
+    // 🔧 端口跳跃：启动定时切换任务
+    fn start_port_hopping(self: Arc<Self>) {
+        if let Some(interval) = self.hop_interval {
+            tokio::spawn(async move {
+                loop {
+                    tokio::time::sleep(interval).await;
+
+                    let new_port = self.next_port();
+                    self.current_port.store(new_port, Ordering::Relaxed);
+
+                    tracing::debug!("hysteria2: hopping to port {}", new_port);
+
+                    // 重建连接
+                    let mut guard = self.connection.lock().await;
+                    if let Some(conn) = guard.take() {
+                        conn.close(0u32.into(), b"port hopping");
+                    }
+                    // 下次 get_connection 会自动建立新连接
+                }
+            });
+        }
+    }
+
     async fn get_connection(&self) -> Result<Arc<quinn::Connection>> {
+        // 🔧 端口跳跃：首次连接时启动任务
+        use std::sync::atomic::AtomicBool;
+        static HOPPING_STARTED: AtomicBool = AtomicBool::new(false);
+
+        if self.hop_interval.is_some() && !HOPPING_STARTED.swap(true, Ordering::Relaxed) {
+            if let (Some(start), Some(end)) = (self.port_start, self.port_end) {
+                let interval = self.hop_interval.unwrap();
+                let current_port = self.current_port.clone();
+                let tag = self.tag.clone();
+
+                tokio::spawn(async move {
+                    tracing::info!("hysteria2: port hopping started for {}", tag);
+                    loop {
+                        tokio::time::sleep(interval).await;
+
+                        // 随机选择新端口
+                        use rand::Rng;
+                        let mut rng = rand::thread_rng();
+                        let new_port = if start == end {
+                            start
+                        } else {
+                            rng.gen_range(start..=end)
+                        };
+
+                        current_port.store(new_port, Ordering::Relaxed);
+                        tracing::info!("hysteria2: hopped to port {}", new_port);
+                    }
+                });
+            }
+        }
+
         let mut guard = self.connection.lock().await;
         if let Some(conn) = guard.as_ref() {
             if conn.close_reason().is_none() {
@@ -89,6 +204,10 @@ async fn connect_and_auth(ob: &Hysteria2Outbound) -> Result<quinn::Connection> {
         .install_default()
         .ok();
     let sni = ob.sni.clone().unwrap_or_else(|| ob.server.clone());
+
+    // 🔧 端口跳跃：使用 current_port
+    let current_port = ob.current_port.load(Ordering::Relaxed);
+
     let tls_cfg = if ob.insecure {
         rustls::ClientConfig::builder()
             .dangerous()
@@ -114,7 +233,7 @@ async fn connect_and_auth(ob: &Hysteria2Outbound) -> Result<quinn::Connection> {
     transport_cfg.max_idle_timeout(Some(Duration::from_secs(300).try_into().unwrap()));
     client_cfg.transport_config(Arc::new(transport_cfg));
 
-    let addr = tokio::net::lookup_host(format!("{}:{}", ob.server, ob.port))
+    let addr = tokio::net::lookup_host(format!("{}:{}", ob.server, current_port))
         .await
         .context("resolve hysteria2 server")?
         .next()
