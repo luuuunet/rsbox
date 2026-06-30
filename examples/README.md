@@ -13,6 +13,10 @@
 | [config-tailscale-derp.json](config-tailscale-derp.json) | Tailscale/DERP | 私有网络配置 |
 | [config-reality.json](config-reality.json) | REALITY | VLESS + REALITY 配置 |
 | [config-shadowsocks.json](config-shadowsocks.json) | Shadowsocks | SS 客户端/服务端 |
+| [config-shadowtls-ss.json](config-shadowtls-ss.json) | ShadowTLS+SS | ST v3 + SS2022 客户端（G5 端口 17890） |
+| [config-anytls.json](config-anytls.json) | AnyTLS | AnyTLS 客户端 |
+| [config-test-shadowtls-ss-anytls.json](config-test-shadowtls-ss-anytls.json) | 协议联调 | 选择器切换 ST+SS / AnyTLS |
+| [TEST-PROTOCOLS.md](TEST-PROTOCOLS.md) | 联调说明 | 占位符、服务端、测试脚本 |
 | [config-routing.json](config-routing.json) | 智能路由 | 基于规则的流量分流 |
 
 ## 🚀 快速开始

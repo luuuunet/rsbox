@@ -88,10 +88,8 @@ fn authorized(headers: &HeaderMap, users: &[(String, String)]) -> bool {
 }
 
 fn managed_inbounds(state: &SsmState) -> Vec<Value> {
-    state
-        .ctx
-        .options
-        .inbounds
+    let opts = state.ctx.options_snapshot();
+    opts.inbounds
         .iter()
         .enumerate()
         .filter(|(_, ib)| {
@@ -103,7 +101,7 @@ fn managed_inbounds(state: &SsmState) -> Vec<Value> {
                     .unwrap_or(false)
         })
         .map(|(i, ib)| {
-            let tag = state.ctx.options.inbound_tag(ib, i);
+            let tag = opts.inbound_tag(ib, i);
             serde_json::json!({
                 "tag": tag,
                 "type": ib.kind,

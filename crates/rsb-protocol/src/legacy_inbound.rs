@@ -7,6 +7,7 @@ use async_trait::async_trait;
 use rsb_core::{BoxError, Inbound};
 use serde_json::Value;
 use std::net::SocketAddr;
+use std::sync::Arc;
 use tokio::net::TcpListener;
 
 macro_rules! tls_inbound {
@@ -107,7 +108,16 @@ async fn serve_legacy_tls(
     acceptor: tokio_rustls::TlsAcceptor,
     password: String,
 ) -> Result<()> {
-    serve_trojan(stream, acceptor, vec![password]).await
+    let connections: rsb_core::SharedConnectionManager =
+        Arc::new(rsb_core::ConnectionManager::new());
+    serve_trojan(
+        stream,
+        acceptor,
+        vec![crate::transport::sha224_hex(&password)],
+        connections,
+        "legacy".into(),
+    )
+    .await
 }
 
 tls_inbound!(

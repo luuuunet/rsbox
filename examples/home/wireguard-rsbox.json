@@ -1,0 +1,57 @@
+{
+  "log": {
+    "level": "info",
+    "timestamp": true
+  },
+  "dns": {
+    "servers": [
+      {
+        "tag": "local-dns",
+        "address": "223.5.5.5"
+      }
+    ],
+    "final": "local-dns",
+    "strategy": "prefer_ipv4"
+  },
+  "inbounds": [
+    {
+      "type": "mixed",
+      "tag": "mixed-in",
+      "listen": "127.0.0.1",
+      "listen_port": 17891,
+      "sniff": true
+    }
+  ],
+  "outbounds": [
+    {
+      "type": "wireguard",
+      "tag": "home-wg",
+      "private_key": "YOUR_CLIENT_PRIVATE_KEY",
+      "address": "10.66.66.2/32",
+      "interface_name": "wg-home",
+      "mtu": 1420,
+      "peers": [
+        {
+          "public_key": "YOUR_HOME_SERVER_PUBLIC_KEY",
+          "endpoint": "your-home.ddns.net:51820",
+          "allowed_ips": ["192.168.0.0/24", "10.66.66.0/24"],
+          "persistent_keepalive_interval": 25
+        }
+      ]
+    },
+    {
+      "type": "direct",
+      "tag": "direct"
+    }
+  ],
+  "route": {
+    "auto_detect_interface": true,
+    "rules": [
+      {
+        "ip_cidr": ["192.168.0.0/24", "10.66.66.0/24"],
+        "outbound": "home-wg"
+      }
+    ],
+    "final": "direct"
+  }
+}

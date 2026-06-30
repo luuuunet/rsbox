@@ -82,6 +82,9 @@ fn check(path: &str) -> anyhow::Result<()> {
 }
 
 async fn run(path: String) -> anyhow::Result<()> {
+    rustls::crypto::ring::default_provider()
+        .install_default()
+        .ok();
     let text = std::fs::read_to_string(&path).context("read config")?;
     let options = Options::from_json(&text)?;
     init_tracing(&options.log.level);

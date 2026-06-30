@@ -73,6 +73,7 @@ impl Dialer {
             metadata.source,
             Some(destination),
             metadata.domain.clone(),
+            metadata.user.clone(),
         );
         let mut result = self
             .manager

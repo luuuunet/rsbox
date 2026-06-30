@@ -87,9 +87,10 @@ impl ExperimentalService for GrpcApi {
     }
 
     async fn get_stats(&self, _req: Request<Empty>) -> Result<Response<Stats>, Status> {
+        let opts = self.ctx.options_snapshot();
         Ok(Response::new(Stats {
             connections: self.ctx.connections.list().len() as u64,
-            outbounds: self.ctx.options.outbounds.len() as u64,
+            outbounds: opts.outbounds.len() as u64,
         }))
     }
 }
@@ -138,13 +139,13 @@ impl OutboundService for GrpcApi {
 }
 
 fn outbound_list(ctx: &ServiceContext) -> OutboundList {
-    let outbounds = ctx
-        .options
+    let opts = ctx.options_snapshot();
+    let outbounds = opts
         .outbounds
         .iter()
         .enumerate()
         .map(|(i, ob)| Outbound {
-            tag: ctx.options.outbound_tag(ob, i),
+            tag: opts.outbound_tag(ob, i),
             r#type: ob.kind.clone(),
         })
         .collect();

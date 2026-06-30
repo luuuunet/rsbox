@@ -29,7 +29,25 @@ impl WireGuardTunnel {
         }
     }
 
+    /// Server mode: `listen_port` set and peers have no `endpoint` (clients dial in).
+    pub fn is_server_mode(raw: &Value) -> bool {
+        if raw.get("listen_port").is_none() {
+            return false;
+        }
+        raw.get("peers")
+            .and_then(|v| v.as_array())
+            .is_some_and(|peers| {
+                !peers.is_empty()
+                    && peers.iter().all(|p| {
+                        p.get("endpoint").is_none()
+                            && p.get("address").is_none()
+                            && p.get("server").is_none()
+                    })
+            })
+    }
+
     pub async fn start(&self, raw: Value) -> Result<()> {
+        let server_mode = Self::is_server_mode(&raw);
         let cfg = parse_config(&raw)?;
         let udp = Arc::new(
             UdpSocket::bind(format!("0.0.0.0:{}", cfg.listen_port))
@@ -72,8 +90,14 @@ impl WireGuardTunnel {
             interface = %interface_name,
             address = %address,
             peers = peer_count,
+            mode = if server_mode { "server" } else { "client" },
             "wireguard boringtun + TUN started"
         );
+
+        if server_mode {
+            #[cfg(unix)]
+            enable_server_nat(&address);
+        }
 
         let sock = udp.clone();
         let tun_io = tun.clone();
@@ -245,7 +269,7 @@ fn create_tun(cfg: &WgConfig) -> Result<tun::AsyncDevice> {
     tun_cfg.tun_name(&cfg.interface_name).mtu(cfg.mtu).up();
     #[cfg(unix)]
     {
-        tun_cfg.address(&cfg.address);
+        apply_tun_address(&mut tun_cfg, &cfg.address)?;
     }
     #[cfg(windows)]
     {
@@ -258,6 +282,26 @@ fn create_tun(cfg: &WgConfig) -> Result<tun::AsyncDevice> {
         tun_cfg.destination(gw);
     }
     tun::create_as_async(&tun_cfg).map_err(|e| anyhow::anyhow!("wireguard tun: {e}"))
+}
+
+#[cfg(unix)]
+fn apply_tun_address(tun_cfg: &mut tun::Configuration, address: &str) -> Result<()> {
+    let (ip_s, prefix_s) = address
+        .split_once('/')
+        .map(|(a, p)| (a, Some(p)))
+        .unwrap_or((address, None));
+    let ip: IpAddr = ip_s.parse().context("wireguard tun address")?;
+    tun_cfg.address(ip);
+    if let (IpAddr::V4(_), Some(prefix_s)) = (ip, prefix_s) {
+        let prefix: u8 = prefix_s.parse().unwrap_or(32);
+        let mask = if prefix >= 32 {
+            u32::MAX
+        } else {
+            u32::MAX << (32 - prefix)
+        };
+        tun_cfg.netmask(Ipv4Addr::from(mask.to_be_bytes()));
+    }
+    Ok(())
 }
 
 async fn handle_datagram(
@@ -476,3 +520,31 @@ pub async fn install_routes(raw: &Value) -> Result<()> {
         .context("join route install")??;
     Ok(())
 }
+
+#[cfg(unix)]
+fn enable_server_nat(address: &str) {
+    use std::process::Command;
+    let _ = Command::new("sysctl")
+        .args(["-w", "net.ipv4.ip_forward=1"])
+        .status();
+    let subnet = address;
+    for iface in ["eth0", "ens3", "enp0s3"] {
+        let _ = Command::new("iptables")
+            .args([
+                "-t",
+                "nat",
+                "-A",
+                "POSTROUTING",
+                "-s",
+                subnet,
+                "-o",
+                iface,
+                "-j",
+                "MASQUERADE",
+            ])
+            .status();
+    }
+}
+
+#[cfg(not(unix))]
+fn enable_server_nat(_address: &str) {}

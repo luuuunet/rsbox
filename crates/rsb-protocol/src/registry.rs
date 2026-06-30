@@ -5,8 +5,9 @@ use crate::group::OutboundController;
 #[cfg(feature = "desktop")]
 use crate::tun_mode;
 use crate::{
-    direct, dns_inbound, dns_outbound, group, http_outbound, hysteria2, inbound_proxy, legacy,
-    legacy_inbound, shadowsocks, socks, trojan, tuic, vless, vmess, wireguard_outbound,
+    anytls, chain_outbound, direct, dns_inbound, dns_outbound, group, http_outbound, hysteria2,
+    hysteria_outbound, inbound_proxy, legacy, legacy_inbound, shadowsocks, shadowtls, socks,
+    trojan, tuic, vless, vmess, wireguard_outbound,
 };
 use anyhow::{bail, Result};
 use rsb_config::{Inbound, Outbound};
@@ -46,15 +47,24 @@ pub fn build_outbound(
         TYPE_BLOCK => Box::new(direct::BlockOutbound::new(tag)),
         TYPE_SOCKS => Box::new(socks::SocksOutbound::new(tag, ob.raw.clone())?),
         TYPE_HTTP => Box::new(http_outbound::HttpOutbound::new(tag, ob.raw.clone())?),
-        TYPE_SHADOWSOCKS => Box::new(shadowsocks::ShadowsocksOutbound::new(tag, ob.raw.clone())?),
+        TYPE_SHADOWSOCKS => Box::new(shadowsocks::ShadowsocksOutbound::new(
+            tag,
+            ob.raw.clone(),
+            shared.clone(),
+        )?),
         TYPE_HYSTERIA2 => Box::new(hysteria2::Hysteria2Outbound::new(tag, ob.raw.clone())?),
-        TYPE_TROJAN => Box::new(trojan::TrojanOutbound::new(tag, ob.raw.clone())?),
-        TYPE_VLESS => Box::new(vless::VlessOutbound::new(tag, ob.raw.clone())?),
-        TYPE_VMESS => Box::new(vmess::VmessOutbound::new(tag, ob.raw.clone())?),
+        TYPE_TROJAN => Box::new(trojan::TrojanOutbound::new(tag, ob.raw.clone(), shared.clone())?),
+        TYPE_VLESS => Box::new(vless::VlessOutbound::new(tag, ob.raw.clone(), shared.clone())?),
+        TYPE_VMESS => Box::new(vmess::VmessOutbound::new(tag, ob.raw.clone(), shared.clone())?),
         TYPE_TUIC => Box::new(tuic::TuicOutbound::new(tag, ob.raw.clone())?),
-        TYPE_HYSTERIA => Box::new(legacy::HysteriaOutbound::new(tag, ob.raw.clone())?),
-        TYPE_SHADOWTLS => Box::new(legacy::ShadowTlsOutbound::new(tag, ob.raw.clone())?),
-        TYPE_ANYTLS => Box::new(legacy::AnyTlsOutbound::new(tag, ob.raw.clone())?),
+        TYPE_HYSTERIA => Box::new(hysteria_outbound::HysteriaOutbound::new(tag, ob.raw.clone())?),
+        TYPE_SHADOWTLS => Box::new(shadowtls::ShadowTlsOutbound::new(tag, ob.raw.clone())?),
+        TYPE_CHAIN => Box::new(chain_outbound::ChainOutbound::new(
+            tag,
+            ob.raw.clone(),
+            shared.clone(),
+        )?),
+        TYPE_ANYTLS => Box::new(anytls::AnyTlsOutbound::new(tag, ob.raw.clone())?),
         TYPE_NAIVE => Box::new(legacy::NaiveOutbound::new(tag, ob.raw.clone())?),
         #[cfg(feature = "desktop")]
         TYPE_SSH => Box::new(legacy::SshOutbound::new(tag, ob.raw.clone())?),
@@ -98,12 +108,46 @@ pub fn build_inbound(
             ctx.dns.clone(),
         )?),
         TYPE_DIRECT => Box::new(direct::DirectInbound::new(tag, ib.raw.clone())?),
-        TYPE_SHADOWSOCKS => Box::new(shadowsocks::ShadowsocksInbound::new(tag, ib.raw.clone())?),
-        TYPE_HYSTERIA2 => Box::new(hysteria2::Hysteria2Inbound::new(tag, ib.raw.clone())?),
-        TYPE_TROJAN => Box::new(trojan::TrojanInbound::new(tag, ib.raw.clone())?),
-        TYPE_VLESS => Box::new(vless::VlessInbound::new(tag, ib.raw.clone())?),
-        TYPE_VMESS => Box::new(vmess::VmessInbound::new(tag, ib.raw.clone())?),
-        TYPE_TUIC => Box::new(tuic::TuicInbound::new(tag, ib.raw.clone())?),
+        TYPE_SHADOWSOCKS => Box::new(shadowsocks::ShadowsocksInbound::new(
+            tag,
+            ib.raw.clone(),
+            dialer.connections(),
+        )?),
+        TYPE_HYSTERIA2 => Box::new(hysteria2::Hysteria2Inbound::new(
+            tag,
+            ib.raw.clone(),
+            dialer.connections(),
+        )?),
+        TYPE_TROJAN => Box::new(trojan::TrojanInbound::new(
+            tag,
+            ib.raw.clone(),
+            dialer.connections(),
+        )?),
+        TYPE_VLESS => {
+            if crate::reality::is_reality(ib.raw.get("tls")) {
+                Box::new(crate::reality_inbound::RealityVlessInbound::new(
+                    tag,
+                    ib.raw.clone(),
+                    dialer.connections(),
+                )?)
+            } else {
+                Box::new(vless::VlessInbound::new(
+                    tag,
+                    ib.raw.clone(),
+                    dialer.connections(),
+                )?)
+            }
+        }
+        TYPE_VMESS => Box::new(vmess::VmessInbound::new(
+            tag,
+            ib.raw.clone(),
+            dialer.connections(),
+        )?),
+        TYPE_TUIC => Box::new(tuic::TuicInbound::new(
+            tag,
+            ib.raw.clone(),
+            dialer.connections(),
+        )?),
         #[cfg(feature = "desktop")]
         TYPE_TUN => Box::new(tun_mode::TunInbound::new(
             tag,
@@ -126,8 +170,17 @@ pub fn build_inbound(
             ctx.dns.clone(),
         )?),
         TYPE_HYSTERIA => Box::new(legacy_inbound::HysteriaInbound::new(tag, ib.raw.clone())?),
-        TYPE_SHADOWTLS => Box::new(legacy_inbound::ShadowTlsInbound::new(tag, ib.raw.clone())?),
-        TYPE_ANYTLS => Box::new(legacy_inbound::AnyTlsInbound::new(tag, ib.raw.clone())?),
+        TYPE_SHADOWTLS => Box::new(shadowtls::ShadowTlsInbound::new_with_context(
+            tag,
+            ib.raw.clone(),
+            ctx,
+            dialer.connections(),
+        )?),
+        TYPE_ANYTLS => Box::new(anytls::AnyTlsInbound::new(
+            tag,
+            ib.raw.clone(),
+            dialer.connections(),
+        )?),
         TYPE_NAIVE => Box::new(legacy_inbound::NaiveInbound::new(tag, ib.raw.clone())?),
         TYPE_DNS => Box::new(dns_inbound::DnsInbound::new(
             tag,

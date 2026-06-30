@@ -43,13 +43,18 @@ serde = { version = "1", features = ["derive"] }
 serde_json = "1"
 uuid = { version = "1", features = ["v4"] }
 aes-gcm = "0.10"
+aes = "0.8"
 chacha20poly1305 = "0.10"
 sha2 = "0.10"
+sha1 = "0.10"
+md5 = "0.7"
+crc = "3"
 hmac = "0.12"
 base64 = "0.22"
 tokio-rustls = "0.26"
 webpki-roots = "0.26"
-shadowsocks = "1.23"
+shadowsocks = { version = "1.23", features = ["aead-cipher-2022"] }
+anytls-rs = "0.5.4"
 parking_lot = "0.12"
 reqwest = { version = "0.12", default-features = false, features = ["rustls-tls"] }
 tun = { version = "0.8", features = ["async"] }
@@ -65,6 +70,7 @@ libc = "0.2"
 boringtun = "0.6"
 ssh2 = { version = "0.9", default-features = false }
 x25519-dalek = { version = "=2.0.0-rc.3", features = ["static_secrets"] }
+ring = "0.17"
 windows-sys = { version = "0.59", features = ["Win32_NetworkManagement_IpHelper", "Win32_Networking_WinSock"] }
 axum = "0.8"
 axum-server = { version = "0.7", features = ["tls-rustls"] }
@@ -114,3 +120,7 @@ opt-level = 3
 inherits = "release"
 debug = true
 strip = false
+
+[patch.crates-io]
+anytls-rs = { path = "vendor/anytls-rs" }
+rustls = { path = "vendor/rustls" }

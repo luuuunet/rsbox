@@ -115,9 +115,6 @@ macro_rules! tls_tunnel_outbound {
     };
 }
 
-tls_tunnel_outbound!(HysteriaOutbound, rsb_constant::TYPE_HYSTERIA);
-tls_tunnel_outbound!(ShadowTlsOutbound, rsb_constant::TYPE_SHADOWTLS);
-tls_tunnel_outbound!(AnyTlsOutbound, rsb_constant::TYPE_ANYTLS);
 tls_tunnel_outbound!(NaiveOutbound, rsb_constant::TYPE_NAIVE);
 
 #[cfg(feature = "desktop")]

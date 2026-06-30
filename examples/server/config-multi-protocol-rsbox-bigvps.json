@@ -1,0 +1,185 @@
+{
+  "log": {
+    "level": "info",
+    "timestamp": true
+  },
+  "inbounds": [
+    {
+      "type": "hysteria2",
+      "tag": "hy2-in",
+      "listen": "0.0.0.0",
+      "listen_port": 3366,
+      "users": [
+        {
+          "password": "TestHy2_EL97_SLWI8bowEb2"
+        }
+      ],
+      "tls": {
+        "enabled": true,
+        "server_name": "s.lulunet.cc",
+        "certificate_path": "/etc/sing-box/fullchain.pem",
+        "key_path": "/etc/sing-box/privkey.pem"
+      }
+    },
+    {
+      "type": "shadowsocks",
+      "tag": "ss-in",
+      "listen": "127.0.0.1",
+      "listen_port": 8388,
+      "method": "2022-blake3-aes-128-gcm",
+      "password": "b2IBYlv44b8OEbdY8DPp2A=="
+    },
+    {
+      "type": "shadowtls",
+      "tag": "st-in",
+      "listen": "0.0.0.0",
+      "listen_port": 4443,
+      "version": 3,
+      "password": "st_test_ioIxewpGpPE",
+      "users": [
+        {
+          "name": "u1",
+          "password": "st_test_ioIxewpGpPE"
+        }
+      ],
+      "handshake": {
+        "server": "www.cloudflare.com",
+        "server_port": 443
+      },
+      "strict_mode": false,
+      "detour": "ss-in"
+    },
+    {
+      "type": "anytls",
+      "tag": "anytls-in",
+      "listen": "0.0.0.0",
+      "listen_port": 8443,
+      "users": [
+        {
+          "name": "u1",
+          "password": "anytls__8KYWcT-ogcn6Q"
+        }
+      ],
+      "tls": {
+        "enabled": true,
+        "server_name": "s.lulunet.cc",
+        "certificate_path": "/etc/sing-box/fullchain.pem",
+        "key_path": "/etc/sing-box/privkey.pem"
+      }
+    },
+    {
+      "type": "trojan",
+      "tag": "trojan-in",
+      "listen": "0.0.0.0",
+      "listen_port": 8444,
+      "users": [
+        {
+          "password": "trojan_7Nwr-mfZb08T1Q"
+        }
+      ],
+      "tls": {
+        "enabled": true,
+        "server_name": "s.lulunet.cc",
+        "certificate_path": "/etc/sing-box/fullchain.pem",
+        "key_path": "/etc/sing-box/privkey.pem"
+      }
+    },
+    {
+      "type": "vless",
+      "tag": "vless-in",
+      "listen": "0.0.0.0",
+      "listen_port": 8445,
+      "users": [
+        {
+          "uuid": "550e8400-e29b-41d4-a716-446655440000"
+        }
+      ],
+      "tls": {
+        "enabled": true,
+        "server_name": "s.lulunet.cc",
+        "certificate_path": "/etc/sing-box/fullchain.pem",
+        "key_path": "/etc/sing-box/privkey.pem"
+      }
+    },
+    {
+      "type": "vmess",
+      "tag": "vmess-in",
+      "listen": "0.0.0.0",
+      "listen_port": 8446,
+      "users": [
+        {
+          "uuid": "6ba7b810-9dad-11d1-80b4-00c04fd430c8"
+        }
+      ],
+      "tls": {
+        "enabled": true,
+        "server_name": "s.lulunet.cc",
+        "certificate_path": "/etc/sing-box/fullchain.pem",
+        "key_path": "/etc/sing-box/privkey.pem"
+      }
+    },
+    {
+      "type": "vless",
+      "tag": "reality-in",
+      "listen": "0.0.0.0",
+      "listen_port": 8447,
+      "users": [
+        {
+          "uuid": "550e8400-e29b-41d4-a716-446655440000",
+          "name": "reality"
+        }
+      ],
+      "tls": {
+        "enabled": true,
+        "server_name": "www.cloudflare.com",
+        "reality": {
+          "enabled": true,
+          "handshake": {
+            "server": "www.cloudflare.com",
+            "server_port": 443
+          },
+          "private_key": "SBmx3gF9whM-5Df2zEz2dBops2Dw6gIDakZ_-dRrDHw",
+          "short_id": [
+            "a1b2c3d4"
+          ]
+        }
+      }
+    },
+    {
+      "type": "shadowsocks",
+      "tag": "ss-direct-in",
+      "listen": "0.0.0.0",
+      "listen_port": 8389,
+      "method": "chacha20-ietf-poly1305",
+      "password": "ss_chacha_C-39jcBnhSE"
+    }
+  ],
+  "outbounds": [
+    {
+      "type": "direct",
+      "tag": "direct"
+    }
+  ],
+  "route": {
+    "final": "direct"
+  },
+  "endpoints": [
+    {
+      "type": "wireguard",
+      "tag": "wg-endpoint",
+      "listen_port": 51820,
+      "address": "10.66.66.1/24",
+      "private_key": "WI5Y/2RdP+18N0DiyVxZRGvN20caEfG/AYFSSuDKYWI=",
+      "interface_name": "wg-rsbox",
+      "mtu": 1420,
+      "peers": [
+        {
+          "public_key": "6U6dcEAnZCU1pA3LnI3MzbZFP6goXVgxTqCvbdJJThE=",
+          "allowed_ips": [
+            "10.66.66.2/32"
+          ]
+        }
+      ]
+    }
+  ]
+}

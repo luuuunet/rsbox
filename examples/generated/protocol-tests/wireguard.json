@@ -1,0 +1,54 @@
+{
+  "log": {
+    "level": "warn",
+    "timestamp": true
+  },
+  "dns": {
+    "servers": [
+      {
+        "tag": "local-dns",
+        "address": "223.5.5.5"
+      }
+    ],
+    "final": "local-dns",
+    "strategy": "prefer_ipv4"
+  },
+  "inbounds": [
+    {
+      "type": "mixed",
+      "tag": "mixed-in",
+      "listen": "127.0.0.1",
+      "listen_port": 17891,
+      "sniff": true
+    }
+  ],
+  "outbounds": [
+    {
+      "type": "wireguard",
+      "tag": "proxy",
+      "private_key": "4M9VOqtH164GLHil5EKmvxdmfWcMwmw6bMkn1cCKg1k=",
+      "address": "10.66.66.2/32",
+      "interface_name": "wg-rsbox",
+      "mtu": 1420,
+      "peers": [
+        {
+          "public_key": "w/WuesGNTU6859z9KtspbgeKLBoY5KMTD3KspdLco0U=",
+          "endpoint": "s.lulunet.cc:51820",
+          "allowed_ips": [
+            "0.0.0.0/0",
+            "::/0"
+          ],
+          "persistent_keepalive_interval": 25
+        }
+      ]
+    },
+    {
+      "type": "direct",
+      "tag": "direct"
+    }
+  ],
+  "route": {
+    "auto_detect_interface": true,
+    "final": "proxy"
+  }
+}

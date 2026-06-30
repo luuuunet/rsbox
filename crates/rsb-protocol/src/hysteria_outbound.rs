@@ -1,8 +1,8 @@
 // Hysteria v1 出站实现
 use anyhow::{Context, Result};
 use async_trait::async_trait;
-use quinn::{ClientConfig, Connection, Endpoint};
-use rsb_core::{BoxError, Network, Outbound, ProxyConn};
+use quinn::{ClientConfig, Connection, Endpoint, WriteError};
+use rsb_core::{proxy_box, BoxError, Network, Outbound, ProxyConn};
 use std::net::SocketAddr;
 use std::sync::Arc;
 use tokio::sync::Mutex;
@@ -21,20 +21,41 @@ pub struct HysteriaOutbound {
 }
 
 impl HysteriaOutbound {
-    pub fn parse(tag: String, config: &serde_json::Value) -> Result<Self> {
+    pub fn new(tag: String, raw: serde_json::Value) -> Result<Self> {
+        let tls = raw.get("tls");
+        let auth_str = raw
+            .get("auth_str")
+            .and_then(|v| v.as_str())
+            .or_else(|| raw.get("auth").and_then(|v| v.as_str()))
+            .map(str::to_string);
         Ok(Self {
             tag,
-            server: config["server"]
-                .as_str()
-                .context("server required")?
+            server: raw
+                .get("server")
+                .and_then(|v| v.as_str())
+                .context("hysteria: server required")?
                 .to_string(),
-            port: config["server_port"].as_u64().context("port required")? as u16,
-            auth_str: config["auth_str"].as_str().map(|s| s.to_string()),
-            obfs: config["obfs"].as_str().map(|s| s.to_string()),
-            up_mbps: config["up_mbps"].as_u64().unwrap_or(10) as u32,
-            down_mbps: config["down_mbps"].as_u64().unwrap_or(10) as u32,
-            sni: config["sni"].as_str().map(|s| s.to_string()),
-            insecure: config["insecure"].as_bool().unwrap_or(false),
+            port: raw
+                .get("server_port")
+                .and_then(|v| v.as_u64())
+                .context("hysteria: server_port required")? as u16,
+            auth_str,
+            obfs: raw
+                .get("obfs")
+                .and_then(|v| v.as_str())
+                .map(str::to_string),
+            up_mbps: raw.get("up_mbps").and_then(|v| v.as_u64()).unwrap_or(10) as u32,
+            down_mbps: raw.get("down_mbps").and_then(|v| v.as_u64()).unwrap_or(10) as u32,
+            sni: tls
+                .and_then(|t| t.get("server_name"))
+                .and_then(|v| v.as_str())
+                .or_else(|| raw.get("sni").and_then(|v| v.as_str()))
+                .map(str::to_string),
+            insecure: tls
+                .and_then(|t| t.get("insecure"))
+                .and_then(|v| v.as_bool())
+                .or_else(|| raw.get("insecure").and_then(|v| v.as_bool()))
+                .unwrap_or(false),
             connection: Arc::new(Mutex::new(None)),
         })
     }
@@ -64,37 +85,42 @@ impl HysteriaOutbound {
             .install_default()
             .ok();
 
-        let mut roots = rustls::RootCertStore::empty();
-        for cert in rustls_native_certs::load_native_certs()? {
-            roots.add(cert).ok();
-        }
-
-        let mut client_config = if self.insecure {
+        let tls_cfg = if self.insecure {
             rustls::ClientConfig::builder()
                 .dangerous()
                 .with_custom_certificate_verifier(Arc::new(crate::transport::SkipVerifier))
                 .with_no_client_auth()
         } else {
             rustls::ClientConfig::builder()
-                .with_root_certificates(roots)
+                .with_root_certificates({
+                    let mut roots = rustls::RootCertStore::empty();
+                    roots.extend(webpki_roots::TLS_SERVER_ROOTS.iter().cloned());
+                    roots
+                })
                 .with_no_client_auth()
         };
-
-        client_config.alpn_protocols = vec![b"hysteria".to_vec()];
+        let mut tls_cfg = tls_cfg;
+        tls_cfg.alpn_protocols = vec![b"hysteria".to_vec()];
 
         let mut transport_config = quinn::TransportConfig::default();
         transport_config.max_concurrent_bidi_streams(100u32.into());
         transport_config.max_concurrent_uni_streams(100u32.into());
         transport_config.max_idle_timeout(Some(std::time::Duration::from_secs(30).try_into()?));
 
-        let mut client_config = ClientConfig::new(Arc::new(client_config));
+        let mut client_config = ClientConfig::new(Arc::new(
+            quinn::crypto::rustls::QuicClientConfig::try_from(tls_cfg)?,
+        ));
         client_config.transport_config(Arc::new(transport_config));
 
         let mut endpoint = Endpoint::client("0.0.0.0:0".parse()?)?;
         endpoint.set_default_client_config(client_config);
 
         let sni = self.sni.as_deref().unwrap_or(&self.server);
-        let addr: SocketAddr = format!("{}:{}", self.server, self.port).parse()?;
+        let addr = tokio::net::lookup_host(format!("{}:{}", self.server, self.port))
+            .await
+            .context("resolve hysteria server")?
+            .next()
+            .context("no hysteria server address")?;
 
         let conn = endpoint
             .connect(addr, sni)?
@@ -113,7 +139,7 @@ impl Outbound for HysteriaOutbound {
     }
 
     fn kind(&self) -> &str {
-        "hysteria"
+        rsb_constant::TYPE_HYSTERIA
     }
 
     fn networks(&self) -> &[Network] {
@@ -132,11 +158,22 @@ impl Outbound for HysteriaOutbound {
         let addr_bytes = format!("{}", destination).into_bytes();
         send.write_all(&addr_bytes).await?;
 
-        Ok(Box::new(HysteriaStream { send, recv }))
+        Ok(proxy_box(HysteriaStream { send, recv }))
     }
 
-    async fn dial_udp(&self) -> Result<rsb_core::ProxyUdpSocket, BoxError> {
-        todo!("Hysteria v1 UDP not implemented yet")
+    async fn dial_udp(&self, _destination: SocketAddr) -> Result<rsb_core::ProxyUdpSocket, BoxError> {
+        let conn = self.get_connection().await?;
+        let (mut send, recv) = conn.open_bi().await?;
+        let header = b"UDP\n";
+        send.write_all(header).await?;
+        Ok(crate::udp_over_tcp::tunneled_udp(HysteriaStream { send, recv }).await)
+    }
+
+    async fn close(&self) -> Result<(), BoxError> {
+        if let Some(conn) = self.connection.lock().await.take() {
+            conn.close(0u32.into(), b"shutdown");
+        }
+        Ok(())
     }
 }
 
@@ -145,7 +182,11 @@ struct HysteriaStream {
     recv: quinn::RecvStream,
 }
 
-use tokio::io::{AsyncRead, AsyncReadExt, AsyncWrite, AsyncWriteExt, ReadBuf};
+use tokio::io::{AsyncRead, AsyncWrite, AsyncWriteExt, ReadBuf};
+
+fn map_write_err(e: WriteError) -> std::io::Error {
+    std::io::Error::new(std::io::ErrorKind::Other, e)
+}
 
 impl AsyncRead for HysteriaStream {
     fn poll_read(
@@ -165,7 +206,12 @@ impl AsyncWrite for HysteriaStream {
         buf: &[u8],
     ) -> std::task::Poll<std::io::Result<usize>> {
         use std::pin::Pin;
-        Pin::new(&mut self.send).poll_write(cx, buf)
+        use std::task::Poll;
+        match Pin::new(&mut self.send).poll_write(cx, buf) {
+            Poll::Ready(Ok(n)) => Poll::Ready(Ok(n)),
+            Poll::Ready(Err(e)) => Poll::Ready(Err(map_write_err(e))),
+            Poll::Pending => Poll::Pending,
+        }
     }
 
     fn poll_flush(

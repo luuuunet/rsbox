@@ -1,9 +1,10 @@
-use crate::transport::{self, sha224_hex};
+use crate::transport::{self, encode_trojan_tcp, encode_trojan_udp, sha224_hex, trojan_key};
 use anyhow::{Context, Result};
 use async_trait::async_trait;
-use rsb_core::{proxy_box, BoxError, Inbound, Network, Outbound, ProxyConn, ProxyUdpSocket};
+use rsb_core::{BoxError, Inbound, Network, Outbound, ProxyConn, ProxyUdpSocket, SharedOutboundManager};
 use serde_json::Value;
 use std::net::SocketAddr;
+use std::sync::Arc;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::{TcpListener, TcpStream};
 
@@ -14,10 +15,12 @@ pub struct TrojanOutbound {
     password: String,
     tls: Option<Value>,
     sni: Option<String>,
+    detour: Option<String>,
+    shared: Arc<SharedOutboundManager>,
 }
 
 impl TrojanOutbound {
-    pub fn new(tag: String, raw: Value) -> Result<Self> {
+    pub fn new(tag: String, raw: Value, shared: Arc<SharedOutboundManager>) -> Result<Self> {
         Ok(Self {
             tag,
             server: raw
@@ -40,43 +43,40 @@ impl TrojanOutbound {
                 .and_then(|t| t.get("server_name"))
                 .and_then(|v| v.as_str())
                 .map(str::to_string),
+            detour: crate::detour::detour_tag(&raw),
+            shared,
         })
     }
 
     async fn connect(&self, destination: SocketAddr) -> Result<ProxyConn> {
-        let mut tls = transport::tls_connect(
+        let mut stream = crate::detour::dial_server_link(
+            &self.shared,
+            self.detour.as_deref(),
             &self.server,
             self.port,
             self.tls.as_ref(),
             self.sni.as_deref(),
         )
         .await?;
-        let hash = sha224_hex(&self.password);
-        let target = format_address(destination);
-        let header = format!("{hash}\r\n{target}\r\n");
-        tls.write_all(header.as_bytes()).await?;
-        Ok(proxy_box(tls))
+        let key = trojan_key(&self.password);
+        let header = encode_trojan_tcp(&key, destination);
+        stream.write_all(&header).await?;
+        Ok(stream)
     }
 
-    async fn connect_udp(&self) -> Result<ProxyUdpSocket> {
-        let mut tls = transport::tls_connect(
+    async fn connect_udp(&self, destination: SocketAddr) -> Result<ProxyUdpSocket> {
+        let mut stream = crate::detour::dial_server_link(
+            &self.shared,
+            self.detour.as_deref(),
             &self.server,
             self.port,
             self.tls.as_ref(),
             self.sni.as_deref(),
         )
         .await?;
-        let hash = sha224_hex(&self.password);
-        tls.write_all(format!("{hash}\r\n").as_bytes()).await?;
-        tls.write_all(b"UDP\r\n").await?;
-        Ok(crate::udp_over_tcp::tunneled_udp(tls).await)
-    }
-}
-
-fn format_address(addr: SocketAddr) -> String {
-    match addr {
-        SocketAddr::V4(v4) => format!("{}:{}", v4.ip(), v4.port()),
-        SocketAddr::V6(v6) => format!("[{}]:{}", v6.ip(), v6.port()),
+        let key = trojan_key(&self.password);
+        stream.write_all(&encode_trojan_udp(&key, destination)).await?;
+        Ok(crate::udp_over_tcp::tunneled_udp(stream).await)
     }
 }
 
@@ -98,8 +98,8 @@ impl Outbound for TrojanOutbound {
     ) -> Result<ProxyConn, BoxError> {
         self.connect(destination).await
     }
-    async fn dial_udp(&self, _destination: SocketAddr) -> Result<ProxyUdpSocket, BoxError> {
-        self.connect_udp().await
+    async fn dial_udp(&self, destination: SocketAddr) -> Result<ProxyUdpSocket, BoxError> {
+        self.connect_udp(destination).await
     }
     async fn close(&self) -> Result<(), BoxError> {
         Ok(())
@@ -110,6 +110,7 @@ pub struct TrojanInbound {
     tag: String,
     listen: SocketAddr,
     users: Vec<String>,
+    connections: rsb_core::SharedConnectionManager,
     tls_cert: String,
     tls_key: String,
     shutdown: tokio::sync::watch::Sender<bool>,
@@ -117,7 +118,7 @@ pub struct TrojanInbound {
 }
 
 impl TrojanInbound {
-    pub fn new(tag: String, raw: Value) -> Result<Self> {
+    pub fn new(tag: String, raw: Value, connections: rsb_core::SharedConnectionManager) -> Result<Self> {
         let listen = crate::direct::parse_listen(&raw)?;
         let mut users = Vec::new();
         if let Some(arr) = raw.get("users").and_then(|v| v.as_array()) {
@@ -151,6 +152,7 @@ impl TrojanInbound {
             tag,
             listen,
             users,
+            connections,
             tls_cert: cert,
             tls_key: key,
             shutdown,
@@ -172,6 +174,8 @@ impl Inbound for TrojanInbound {
         let listener = TcpListener::bind(self.listen).await?;
         tracing::info!(tag = %self.tag, %self.listen, "trojan inbound listening");
         let users = self.users.clone();
+        let connections = self.connections.clone();
+        let inbound_tag = self.tag.clone();
         let mut shutdown = self.shutdown.subscribe();
         let handle = tokio::spawn(async move {
             loop {
@@ -183,9 +187,14 @@ impl Inbound for TrojanInbound {
                         let Ok((stream, _)) = accept else { break };
                         let acceptor = acceptor.clone();
                         let users = users.clone();
+                        let connections = connections.clone();
+                        let inbound_tag = inbound_tag.clone();
                         tokio::spawn(async move {
                             let mut stream = stream;
-                            if let Err(err) = serve_trojan(stream, acceptor, users).await {
+                            if let Err(err) =
+                                serve_trojan(stream, acceptor, users, connections, inbound_tag)
+                                    .await
+                            {
                                 tracing::debug!(error = %err, "trojan client failed");
                             }
                         });
@@ -206,7 +215,7 @@ impl Inbound for TrojanInbound {
 }
 
 pub fn build_tls_acceptor(cert: &str, key: &str) -> Result<tokio_rustls::TlsAcceptor> {
-    use rustls::pki_types::{CertificateDer, PrivateKeyDer};
+    use rustls::pki_types::CertificateDer;
     use rustls::ServerConfig;
     use std::fs::File;
     use std::io::BufReader;
@@ -216,10 +225,8 @@ pub fn build_tls_acceptor(cert: &str, key: &str) -> Result<tokio_rustls::TlsAcce
         rustls_pemfile::certs(&mut cert_reader).collect::<Result<Vec<_>, _>>()?;
     let key_file = File::open(key).with_context(|| format!("open key {key}"))?;
     let mut key_reader = BufReader::new(key_file);
-    let key = rustls_pemfile::pkcs8_private_keys(&mut key_reader)
-        .next()
-        .transpose()?
-        .map(PrivateKeyDer::Pkcs8)
+    let key = rustls_pemfile::private_key(&mut key_reader)
+        .context("parse key pem")?
         .context("read private key")?;
     let cfg = ServerConfig::builder()
         .with_no_client_auth()
@@ -231,28 +238,49 @@ pub(crate) async fn serve_trojan(
     mut stream: TcpStream,
     acceptor: tokio_rustls::TlsAcceptor,
     users: Vec<String>,
+    connections: rsb_core::SharedConnectionManager,
+    inbound_tag: String,
 ) -> Result<()> {
     let mut tls = acceptor.accept(stream).await?;
-    let mut buf = vec![0u8; 56 + 2 + 256];
+    let mut buf = vec![0u8; 4096];
     let n = tls.read(&mut buf).await?;
-    let text = std::str::from_utf8(&buf[..n])?;
-    let Some((hash, rest)) = text.split_once("\r\n") else {
-        anyhow::bail!("invalid trojan header");
-    };
-    if !users.iter().any(|u| u == hash) {
+    if n < 56 + 2 + 1 + 7 + 2 {
+        anyhow::bail!("truncated trojan header");
+    }
+    let key = std::str::from_utf8(&buf[..56]).context("trojan key utf8")?;
+    if !users.iter().any(|u| u == key) {
         anyhow::bail!("trojan auth failed");
     }
-    let Some((target, _)) = rest.split_once("\r\n") else {
-        anyhow::bail!("invalid trojan target");
-    };
-    let dest: SocketAddr = if target.starts_with('[') {
-        target.parse()?
-    } else {
-        tokio::net::lookup_host(target)
+    let mut off = 56;
+    if &buf[off..off + 2] != b"\r\n" {
+        anyhow::bail!("invalid trojan header delimiter");
+    }
+    off += 2;
+    let _cmd = buf[off];
+    off += 1;
+    let (dest, consumed) = transport::decode_socks_address(&buf[off..])?;
+    off += consumed;
+    if off + 2 > n || &buf[off..off + 2] != b"\r\n" {
+        anyhow::bail!("invalid trojan header trailer");
+    }
+    off += 2;
+    let dest = match dest {
+        transport::DecodedSocksAddr::Ip(addr) => addr,
+        transport::DecodedSocksAddr::Domain(host, port) => tokio::net::lookup_host(format!("{host}:{port}"))
             .await?
             .next()
-            .with_context(|| format!("resolve {target}"))?
+            .with_context(|| format!("resolve {host}"))?,
     };
     let mut remote = TcpStream::connect(dest).await?;
-    crate::inbound_proxy::relay_streams(&mut tls, &mut remote).await
+    if off < n {
+        remote.write_all(&buf[off..n]).await?;
+    }
+    let session = crate::user_relay::begin_for_trojan_hash(
+        &connections,
+        &inbound_tag,
+        key,
+        Some(dest),
+        None,
+    )?;
+    crate::inbound_proxy::relay_streams_user(&session, &mut tls, &mut remote).await
 }

@@ -233,12 +233,17 @@ pub struct TuicInbound {
     users: Vec<(Uuid, String)>,
     cert: String,
     key: String,
+    connections: rsb_core::SharedConnectionManager,
     shutdown: tokio::sync::watch::Sender<bool>,
     handle: tokio::sync::Mutex<Option<tokio::task::JoinHandle<()>>>,
 }
 
 impl TuicInbound {
-    pub fn new(tag: String, raw: Value) -> Result<Self> {
+    pub fn new(
+        tag: String,
+        raw: Value,
+        connections: rsb_core::SharedConnectionManager,
+    ) -> Result<Self> {
         let listen = crate::direct::parse_listen(&raw)?;
         let mut users = Vec::new();
         if let Some(arr) = raw.get("users").and_then(|v| v.as_array()) {
@@ -275,6 +280,7 @@ impl TuicInbound {
             users,
             cert,
             key,
+            connections,
             shutdown,
             handle: tokio::sync::Mutex::new(None),
         })
@@ -298,6 +304,8 @@ impl Inbound for TuicInbound {
             .map_err(|e| anyhow::anyhow!("tuic endpoint: {e}"))?;
         tracing::info!(tag = %self.tag, %self.listen, users = self.users.len(), "tuic inbound listening");
         let users = self.users.clone();
+        let connections = self.connections.clone();
+        let inbound_tag = self.tag.clone();
         let mut shutdown = self.shutdown.subscribe();
         let handle = tokio::spawn(async move {
             loop {
@@ -308,9 +316,13 @@ impl Inbound for TuicInbound {
                     incoming = endpoint.accept() => {
                         let Some(incoming) = incoming else { break };
                         let users = users.clone();
+                        let connections = connections.clone();
+                        let inbound_tag = inbound_tag.clone();
                         tokio::spawn(async move {
                             if let Ok(conn) = incoming.await {
-                                if let Err(err) = serve_tuic_connection(conn, users).await {
+                                if let Err(err) =
+                                    serve_tuic_connection(conn, users, connections, inbound_tag).await
+                                {
                                     tracing::debug!(error = %err, "tuic session ended");
                                 }
                             }
@@ -355,15 +367,24 @@ fn build_tuic_server_config(cert: &str, key: &str) -> Result<quinn::ServerConfig
     Ok(server_cfg)
 }
 
-async fn serve_tuic_connection(conn: quinn::Connection, users: Vec<(Uuid, String)>) -> Result<()> {
+async fn serve_tuic_connection(
+    conn: quinn::Connection,
+    users: Vec<(Uuid, String)>,
+    connections: rsb_core::SharedConnectionManager,
+    inbound_tag: String,
+) -> Result<()> {
     loop {
-        let (mut send, mut recv) = match conn.accept_bi().await {
+        let (send, recv) = match conn.accept_bi().await {
             Ok(v) => v,
             Err(_) => break,
         };
         let users = users.clone();
+        let connections = connections.clone();
+        let inbound_tag = inbound_tag.clone();
         tokio::spawn(async move {
-            if let Err(err) = handle_tuic_stream(&mut send, &mut recv, users).await {
+            if let Err(err) =
+                handle_tuic_stream(send, recv, users, connections, inbound_tag).await
+            {
                 tracing::debug!(error = %err, "tuic stream failed");
             }
         });
@@ -372,9 +393,11 @@ async fn serve_tuic_connection(conn: quinn::Connection, users: Vec<(Uuid, String
 }
 
 async fn handle_tuic_stream(
-    send: &mut quinn::SendStream,
-    recv: &mut quinn::RecvStream,
+    mut send: quinn::SendStream,
+    mut recv: quinn::RecvStream,
     users: Vec<(Uuid, String)>,
+    connections: rsb_core::SharedConnectionManager,
+    inbound_tag: String,
 ) -> Result<()> {
     let mut header = vec![0u8; 512];
     let n = recv.read(&mut header).await?.context("tuic header")?;
@@ -425,12 +448,13 @@ async fn handle_tuic_stream(
     };
     send.write_all(&[0]).await?;
     let mut remote = tokio::net::TcpStream::connect(dest).await?;
-    let (mut cr, mut cw) = remote.split();
-    let mut sr = recv;
-    let mut sw = send;
-    tokio::select! {
-        _ = tokio::io::copy(&mut sr, &mut cw) => {}
-        _ = tokio::io::copy(&mut cr, &mut sw) => {}
-    }
-    Ok(())
+    let relay_session = crate::user_relay::begin_for_uuid(
+        &connections,
+        &inbound_tag,
+        &uid,
+        Some(dest),
+        None,
+    )?;
+    let mut client = TuicBiStream { read: recv, write: send };
+    crate::inbound_proxy::relay_streams_user(&relay_session, &mut client, &mut remote).await
 }

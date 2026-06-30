@@ -1,9 +1,10 @@
 use crate::transport::{self, address_from_socket};
 use anyhow::{Context, Result};
 use async_trait::async_trait;
-use rsb_core::{BoxError, Inbound, Network, Outbound, ProxyConn, ProxyUdpSocket};
+use rsb_core::{BoxError, Inbound, Network, Outbound, ProxyConn, ProxyUdpSocket, SharedOutboundManager};
 use serde_json::Value;
 use std::net::SocketAddr;
+use std::sync::Arc;
 use tokio::io::AsyncWriteExt;
 use tokio::net::{TcpListener, TcpStream};
 use uuid::Uuid;
@@ -19,10 +20,12 @@ pub struct VmessOutbound {
     authenticated_length: bool,
     tls: Option<Value>,
     sni: Option<String>,
+    detour: Option<String>,
+    shared: Arc<SharedOutboundManager>,
 }
 
 impl VmessOutbound {
-    pub fn new(tag: String, raw: Value) -> Result<Self> {
+    pub fn new(tag: String, raw: Value, shared: Arc<SharedOutboundManager>) -> Result<Self> {
         let uuid_str = raw
             .get("uuid")
             .and_then(|v| v.as_str())
@@ -63,79 +66,39 @@ impl VmessOutbound {
                 .and_then(|t| t.get("server_name"))
                 .and_then(|v| v.as_str())
                 .map(str::to_string),
+            detour: crate::detour::detour_tag(&raw),
+            shared,
         })
     }
 
     async fn connect(&self, destination: SocketAddr) -> Result<ProxyConn> {
-        let use_tls = self
-            .tls
-            .as_ref()
-            .map(|t| t.get("enabled").and_then(|v| v.as_bool()).unwrap_or(true))
-            .unwrap_or(false);
-        let mut stream: Box<dyn rsb_core::ProxyStream> = if use_tls {
-            Box::new(
-                transport::tls_connect(
-                    &self.server,
-                    self.port,
-                    self.tls.as_ref(),
-                    self.sni.as_deref(),
-                )
-                .await?,
-            )
-        } else {
-            Box::new(transport::tcp_connect(&self.server, self.port).await?)
-        };
-        let header = build_vmess_header(
-            self.uuid,
-            destination,
-            1,
-            self.global_padding,
-            self.authenticated_length,
-            &self.security,
-        )?;
-        stream.write_all(&header).await?;
-        Ok(stream)
+        let mut stream = crate::detour::dial_server_link(
+            &self.shared,
+            self.detour.as_deref(),
+            &self.server,
+            self.port,
+            self.tls.as_ref(),
+            self.sni.as_deref(),
+        )
+        .await?;
+        let (request_key, request_nonce) =
+            crate::vmess_aead::connect(&mut stream, self.uuid, destination).await?;
+        Ok(crate::vmess_aead::wrap_stream(stream, request_key, request_nonce))
     }
 
     async fn connect_udp_tunnel(&self, destination: SocketAddr) -> Result<ProxyUdpSocket> {
-        let use_tls = self
-            .tls
-            .as_ref()
-            .map(|t| t.get("enabled").and_then(|v| v.as_bool()).unwrap_or(true))
-            .unwrap_or(false);
         let xudp = self.packet_encoding == "xudp";
-        if use_tls {
-            let stream = transport::tls_connect(
-                &self.server,
-                self.port,
-                self.tls.as_ref(),
-                self.sni.as_deref(),
-            )
-            .await?;
-            if xudp {
-                let mut stream = stream;
-                let header = build_vmess_mux_xudp_header(
-                    self.uuid,
-                    self.global_padding,
-                    self.authenticated_length,
-                )?;
-                stream.write_all(&header).await?;
-                return Ok(crate::xudp::xudp_over_stream(stream, Some(destination)).await);
-            }
-            let mut stream = stream;
-            let header = build_vmess_header(
-                self.uuid,
-                destination,
-                2,
-                self.global_padding,
-                self.authenticated_length,
-                &self.security,
-            )?;
-            stream.write_all(&header).await?;
-            return Ok(crate::udp_over_tcp::tunneled_udp(stream).await);
-        }
-        let mut stream = transport::tcp_connect(&self.server, self.port).await?;
+        let stream = crate::detour::dial_server_link(
+            &self.shared,
+            self.detour.as_deref(),
+            &self.server,
+            self.port,
+            self.tls.as_ref(),
+            self.sni.as_deref(),
+        )
+        .await?;
         if xudp {
+            let mut stream = stream;
             let header = build_vmess_mux_xudp_header(
                 self.uuid,
                 self.global_padding,
@@ -144,6 +107,7 @@ impl VmessOutbound {
             stream.write_all(&header).await?;
             return Ok(crate::xudp::xudp_over_stream(stream, Some(destination)).await);
         }
+        let mut stream = stream;
         let header = build_vmess_header(
             self.uuid,
             destination,
@@ -294,12 +258,15 @@ pub struct VmessInbound {
     tag: String,
     listen: SocketAddr,
     users: Vec<Uuid>,
+    connections: rsb_core::SharedConnectionManager,
+    tls_cert: String,
+    tls_key: String,
     shutdown: tokio::sync::watch::Sender<bool>,
     handle: tokio::sync::Mutex<Option<tokio::task::JoinHandle<()>>>,
 }
 
 impl VmessInbound {
-    pub fn new(tag: String, raw: Value) -> Result<Self> {
+    pub fn new(tag: String, raw: Value, connections: rsb_core::SharedConnectionManager) -> Result<Self> {
         let listen = crate::direct::parse_listen(&raw)?;
         let mut users = Vec::new();
         if let Some(arr) = raw.get("users").and_then(|v| v.as_array()) {
@@ -315,11 +282,27 @@ impl VmessInbound {
             }
         }
         anyhow::ensure!(!users.is_empty(), "vmess inbound: uuid/users required");
+        let tls = raw.get("tls").context("vmess inbound: tls required")?;
+        let cert = tls
+            .get("certificate_path")
+            .or_else(|| tls.get("certificate"))
+            .and_then(|v| v.as_str())
+            .context("vmess inbound: certificate")?
+            .to_string();
+        let key = tls
+            .get("key_path")
+            .or_else(|| tls.get("key"))
+            .and_then(|v| v.as_str())
+            .context("vmess inbound: key")?
+            .to_string();
         let (shutdown, _) = tokio::sync::watch::channel(false);
         Ok(Self {
             tag,
             listen,
             users,
+            connections,
+            tls_cert: cert,
+            tls_key: key,
             shutdown,
             handle: tokio::sync::Mutex::new(None),
         })
@@ -335,9 +318,12 @@ impl Inbound for VmessInbound {
         rsb_constant::TYPE_VMESS
     }
     async fn start(&self) -> Result<(), BoxError> {
+        let acceptor = crate::trojan::build_tls_acceptor(&self.tls_cert, &self.tls_key)?;
         let listener = TcpListener::bind(self.listen).await?;
         tracing::info!(tag = %self.tag, %self.listen, "vmess inbound listening");
         let users = self.users.clone();
+        let connections = self.connections.clone();
+        let inbound_tag = self.tag.clone();
         let mut shutdown = self.shutdown.subscribe();
         let handle = tokio::spawn(async move {
             loop {
@@ -347,10 +333,15 @@ impl Inbound for VmessInbound {
                     }
                     accept = listener.accept() => {
                         let Ok((stream, _)) = accept else { break };
+                        let acceptor = acceptor.clone();
                         let users = users.clone();
+                        let connections = connections.clone();
+                        let inbound_tag = inbound_tag.clone();
                         tokio::spawn(async move {
-                            let mut stream = stream;
-                            if let Err(err) = serve_vmess(stream, users).await {
+                            if let Err(err) =
+                                serve_vmess(stream, acceptor, users, connections, inbound_tag)
+                                    .await
+                            {
                                 tracing::debug!(error = %err, "vmess client failed");
                             }
                         });
@@ -370,37 +361,30 @@ impl Inbound for VmessInbound {
     }
 }
 
-async fn serve_vmess(mut stream: TcpStream, users: Vec<Uuid>) -> Result<()> {
-    use aes_gcm::aead::{Aead, KeyInit};
-    use aes_gcm::{Aes128Gcm, Nonce};
-    use tokio::io::{AsyncReadExt, AsyncWriteExt};
-    let mut io = stream;
-    let mut buf = vec![0u8; 4096];
-    let n = io.read(&mut buf).await?;
-    if n < 16 + 12 + 16 {
-        anyhow::bail!("truncated vmess header");
-    }
-    let uid = Uuid::from_bytes(buf[..16].try_into()?);
-    if !users.contains(&uid) {
-        anyhow::bail!("vmess auth failed");
-    }
-    let mut cmd_key = [0u8; 16];
-    cmd_key.copy_from_slice(&uid.as_bytes()[..16]);
-    let cipher = Aes128Gcm::new_from_slice(&cmd_key)?;
-    let iv = &buf[16..28];
-    let body = cipher
-        .decrypt(Nonce::from_slice(iv), &buf[28..n])
-        .map_err(|e| anyhow::anyhow!("vmess decrypt: {e}"))?;
-    if body.len() < 12 {
-        anyhow::bail!("truncated vmess body");
-    }
-    let port = u16::from_be_bytes([body[9], body[10]]);
-    let atyp = body[11];
-    let (host, _) = crate::vless::read_address(&body[12..], atyp)?;
-    let dest: SocketAddr = tokio::net::lookup_host(format!("{host}:{port}"))
-        .await?
-        .next()
-        .context("resolve vmess target")?;
-    let remote = TcpStream::connect(dest).await?;
-    crate::inbound_proxy::relay_bidirectional(&mut io, remote).await
+async fn serve_vmess(
+    stream: TcpStream,
+    acceptor: tokio_rustls::TlsAcceptor,
+    users: Vec<Uuid>,
+    connections: rsb_core::SharedConnectionManager,
+    inbound_tag: String,
+) -> Result<()> {
+    let mut tls = acceptor.accept(stream).await?;
+    let accepted = crate::vmess_aead::accept_handshake(&mut tls, &users).await?;
+    crate::vmess_aead::write_server_response(
+        &mut tls,
+        &accepted.request_key,
+        &accepted.request_nonce,
+        accepted.response_header,
+        accepted.option,
+    )
+    .await?;
+    let mut remote = TcpStream::connect(accepted.dest).await?;
+    let session = crate::user_relay::begin_for_uuid(
+        &connections,
+        &inbound_tag,
+        &accepted.user,
+        Some(accepted.dest),
+        None,
+    )?;
+    crate::inbound_proxy::relay_streams_user(&session, &mut tls, &mut remote).await
 }

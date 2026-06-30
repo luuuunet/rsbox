@@ -61,10 +61,8 @@ pub fn random_padding_len(min: usize, max: usize) -> usize {
     min + (rand::random::<u32>() as usize % span)
 }
 
-pub fn is_auth_request(method: &http::Method, path: &str, authority: Option<&str>) -> bool {
-    method == http::Method::POST
-        && path == AUTH_PATH
-        && authority.map(|a| a == AUTH_AUTHORITY).unwrap_or(true)
+pub fn is_auth_request(method: &http::Method, path: &str, _authority: Option<&str>) -> bool {
+    method == http::Method::POST && path == AUTH_PATH
 }
 
 #[cfg(test)]

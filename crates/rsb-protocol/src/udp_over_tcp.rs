@@ -16,7 +16,7 @@ pub async fn tcp_tunneled_udp(connect: TcpStream) -> ProxyUdpSocket {
 
 pub async fn tunneled_udp<S>(stream: S) -> ProxyUdpSocket
 where
-    S: AsyncRead + AsyncWrite + Send + Sync + Unpin + 'static,
+    S: AsyncRead + AsyncWrite + Send + Unpin + 'static,
 {
     let (reader, writer) = tokio::io::split(stream);
     let (tx, rx) = mpsc::unbounded_channel();
@@ -45,7 +45,7 @@ struct TcpTunneledUdp<W> {
 #[async_trait]
 impl<W> ProxyUdpIo for TcpTunneledUdp<W>
 where
-    W: AsyncWrite + Send + Sync + Unpin,
+    W: AsyncWrite + Send + Unpin,
 {
     async fn send_to(&self, buf: &[u8], target: SocketAddr) -> std::io::Result<usize> {
         let frame = encode_frame(buf, target);

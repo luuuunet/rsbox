@@ -1,8 +1,8 @@
 use anyhow::Result;
 use axum::{
-    extract::{Path, State},
+    extract::{Path, Query, State},
     http::{HeaderMap, StatusCode},
-    routing::{get, put},
+    routing::{get, post, put},
     Json, Router,
 };
 use rsb_config::ClashApiOptions;
@@ -12,7 +12,10 @@ use std::collections::HashMap;
 use std::net::SocketAddr;
 use std::path::{Path as FsPath, PathBuf};
 use std::sync::{Arc, RwLock};
+use tokio::sync::watch;
 use tokio::task::JoinHandle;
+
+mod v2ray_grpc;
 
 pub struct ClashApiServer {
     handle: Option<JoinHandle<()>>,
@@ -188,7 +191,9 @@ fn auth_ok(state: &ClashApiState, headers: &HeaderMap) -> bool {
 }
 
 pub struct V2RayApiServer {
-    handle: Option<JoinHandle<()>>,
+    http_handle: Option<JoinHandle<()>>,
+    grpc_handle: Option<JoinHandle<()>>,
+    grpc_shutdown: Option<watch::Sender<bool>>,
 }
 
 #[derive(Clone)]
@@ -201,7 +206,11 @@ impl V2RayApiServer {
         options: &serde_json::Value,
         connections: SharedConnectionManager,
     ) -> Result<Self> {
-        let mut server = Self { handle: None };
+        let mut server = Self {
+            http_handle: None,
+            grpc_handle: None,
+            grpc_shutdown: None,
+        };
         if options.is_null() {
             return Ok(server);
         }
@@ -210,30 +219,90 @@ impl V2RayApiServer {
             .and_then(|v| v.as_str())
             .unwrap_or("127.0.0.1:8080");
         let addr: SocketAddr = listen.parse()?;
-        let state = V2RayApiState { connections };
-        let app = Router::new()
-            .route("/stats", get(v2ray_stats))
-            .route("/debug/vars", get(v2ray_stats))
-            .with_state(state);
-        let listener = tokio::net::TcpListener::bind(addr).await?;
-        tracing::info!(%addr, "v2ray api listening");
-        server.handle = Some(tokio::spawn(async move {
-            let _ = axum::serve(listener, app).await;
-        }));
+        let http_enabled = options
+            .get("http")
+            .and_then(|v| v.as_bool())
+            .unwrap_or(true);
+        if http_enabled {
+            let state = V2RayApiState {
+                connections: connections.clone(),
+            };
+            let app = Router::new()
+                .route("/stats", get(v2ray_stats).post(v2ray_stats_query))
+                .route("/debug/vars", get(v2ray_stats))
+                .with_state(state);
+            let listener = tokio::net::TcpListener::bind(addr).await?;
+            tracing::info!(%addr, "v2ray api http listening");
+            server.http_handle = Some(tokio::spawn(async move {
+                let _ = axum::serve(listener, app).await;
+            }));
+        }
+        let grpc_listen: Option<SocketAddr> = options
+            .get("grpc_listen")
+            .and_then(|v| v.as_str())
+            .map(str::parse)
+            .transpose()?;
+        let grpc_listen =
+            grpc_listen.or_else(|| if http_enabled { None } else { Some(addr) });
+        if let Some(grpc_addr) = grpc_listen {
+            let (shutdown_tx, shutdown_rx) = watch::channel(false);
+            server.grpc_shutdown = Some(shutdown_tx);
+            let conns = connections.clone();
+            tracing::info!(%grpc_addr, "v2ray api grpc listening");
+            server.grpc_handle = Some(tokio::spawn(async move {
+                v2ray_grpc::spawn_v2ray_stats_grpc(conns, grpc_addr, shutdown_rx).await;
+            }));
+        }
         Ok(server)
     }
 
     pub fn stop(&mut self) {
-        if let Some(h) = self.handle.take() {
+        if let Some(h) = self.http_handle.take() {
+            h.abort();
+        }
+        if let Some(tx) = self.grpc_shutdown.take() {
+            let _ = tx.send(true);
+        }
+        if let Some(h) = self.grpc_handle.take() {
             h.abort();
         }
     }
 }
 
-async fn v2ray_stats(State(state): State<V2RayApiState>) -> Json<serde_json::Value> {
+#[derive(serde::Deserialize, Default)]
+struct V2RayStatsQuery {
+    pattern: Option<String>,
+    reset: Option<bool>,
+}
+
+#[derive(serde::Deserialize, Default)]
+struct V2RayStatsBody {
+    pattern: Option<String>,
+    reset: Option<bool>,
+}
+
+async fn v2ray_stats(
+    State(state): State<V2RayApiState>,
+    Query(query): Query<V2RayStatsQuery>,
+) -> Json<serde_json::Value> {
+    v2ray_stats_json(&state, query.pattern.as_deref().unwrap_or(""), query.reset.unwrap_or(false))
+}
+
+async fn v2ray_stats_query(
+    State(state): State<V2RayApiState>,
+    Json(body): Json<V2RayStatsBody>,
+) -> Json<serde_json::Value> {
+    v2ray_stats_json(
+        &state,
+        body.pattern.as_deref().unwrap_or(""),
+        body.reset.unwrap_or(false),
+    )
+}
+
+fn v2ray_stats_json(state: &V2RayApiState, pattern: &str, reset: bool) -> Json<serde_json::Value> {
     let stat: Vec<_> = state
         .connections
-        .v2ray_stat_entries()
+        .query_v2ray_stats(pattern, reset)
         .into_iter()
         .map(|(name, value)| serde_json::json!({ "name": name, "value": value }))
         .collect();

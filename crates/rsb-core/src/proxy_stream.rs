@@ -25,6 +25,7 @@ pub struct TrackedStream {
     id: u64,
     inbound_tag: String,
     outbound_tag: String,
+    user: Option<String>,
 }
 
 impl TrackedStream {
@@ -34,6 +35,7 @@ impl TrackedStream {
         id: u64,
         inbound_tag: String,
         outbound_tag: String,
+        user: Option<String>,
     ) -> Self {
         Self {
             inner,
@@ -41,6 +43,7 @@ impl TrackedStream {
             id,
             inbound_tag,
             outbound_tag,
+            user,
         }
     }
 }
@@ -62,8 +65,13 @@ impl AsyncRead for TrackedStream {
         if let Poll::Ready(Ok(())) = &poll {
             let n = buf.filled().len().saturating_sub(before) as u64;
             if n > 0 {
-                self.connections
-                    .record_traffic(&self.inbound_tag, &self.outbound_tag, 0, n);
+                self.connections.record_traffic(
+                    &self.inbound_tag,
+                    &self.outbound_tag,
+                    0,
+                    n,
+                    self.user.as_deref(),
+                );
             }
         }
         poll
@@ -84,6 +92,7 @@ impl AsyncWrite for TrackedStream {
                     &self.outbound_tag,
                     *n as u64,
                     0,
+                    self.user.as_deref(),
                 );
             }
         }
@@ -104,15 +113,16 @@ pub fn tracked_stream(
     connections: SharedConnectionManager,
     id: u64,
 ) -> ProxyConn {
-    let (inbound_tag, outbound_tag) = connections
+    let (inbound_tag, outbound_tag, user) = connections
         .connection_info(id)
-        .unwrap_or_else(|| ("unknown".into(), "unknown".into()));
+        .unwrap_or_else(|| ("unknown".into(), "unknown".into(), None));
     Box::new(TrackedStream::new(
         inner,
         connections,
         id,
         inbound_tag,
         outbound_tag,
+        user,
     ))
 }
 

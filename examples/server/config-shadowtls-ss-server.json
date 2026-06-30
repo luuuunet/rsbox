@@ -1,0 +1,46 @@
+{
+  "log": {
+    "level": "info",
+    "timestamp": true
+  },
+  "inbounds": [
+    {
+      "type": "shadowtls",
+      "tag": "shadowtls-in",
+      "listen": "::",
+      "listen_port": 443,
+      "version": 3,
+      "password": "YOUR_ST_PASSWORD",
+      "users": [
+        {
+          "name": "user1",
+          "password": "YOUR_ST_PASSWORD"
+        }
+      ],
+      "handshake": {
+        "server": "www.cloudflare.com",
+        "server_port": 443
+      },
+      "strict_mode": false,
+      "detour": "shadowsocks-in"
+    },
+    {
+      "type": "shadowsocks",
+      "tag": "shadowsocks-in",
+      "listen": "127.0.0.1",
+      "listen_port": 8388,
+      "network": "tcp",
+      "method": "2022-blake3-aes-128-gcm",
+      "password": "YOUR_SS_PASSWORD"
+    }
+  ],
+  "outbounds": [
+    {
+      "type": "direct",
+      "tag": "direct"
+    }
+  ],
+  "route": {
+    "final": "direct"
+  }
+}

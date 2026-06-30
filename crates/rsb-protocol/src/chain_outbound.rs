@@ -1,52 +1,52 @@
-// 链式代理实现
-use anyhow::Result;
+//! Chain outbound — route through the last configured proxy in the chain.
+//!
+//! Full multi-hop chaining requires each outbound's `detour` field (sing-box style).
+//! Until detour dialing is wired, the last tag in `outbounds` handles the connection.
+
+use anyhow::{Context, Result};
 use async_trait::async_trait;
-use rsb_core::{BoxError, Network, Outbound, ProxyConn};
+use rsb_core::{BoxError, Network, Outbound, ProxyConn, ProxyUdpSocket, SharedOutboundManager};
+use serde_json::Value;
 use std::net::SocketAddr;
 use std::sync::Arc;
 
 pub struct ChainOutbound {
     tag: String,
-    outbounds: Vec<Arc<dyn Outbound>>,
+    shared: Arc<SharedOutboundManager>,
+    outbound_tags: Vec<String>,
 }
 
 impl ChainOutbound {
-    pub fn new(tag: String, outbounds: Vec<Arc<dyn Outbound>>) -> Self {
-        Self { tag, outbounds }
+    pub fn new(tag: String, raw: Value, shared: Arc<SharedOutboundManager>) -> Result<Self> {
+        let outbound_tags = raw
+            .get("outbounds")
+            .and_then(|v| v.as_array())
+            .context("chain: outbounds array required")?
+            .iter()
+            .filter_map(|v| v.as_str().map(str::to_string))
+            .collect::<Vec<_>>();
+        if outbound_tags.is_empty() {
+            anyhow::bail!("chain: at least one outbound tag required");
+        }
+        if outbound_tags.len() > 1 {
+            tracing::warn!(
+                tag = %tag,
+                hops = outbound_tags.len(),
+                "chain: multi-hop detour not implemented; using last outbound only"
+            );
+        }
+        Ok(Self {
+            tag,
+            shared,
+            outbound_tags,
+        })
     }
 
-    async fn dial_through_chain(&self, destination: SocketAddr) -> Result<ProxyConn> {
-        if self.outbounds.is_empty() {
-            anyhow::bail!("No outbounds in chain");
-        }
-
-        tracing::debug!(
-            chain_length = self.outbounds.len(),
-            destination = %destination,
-            "Dialing through proxy chain"
-        );
-
-        // 第一个代理直接连接
-        let mut current = self.outbounds[0].dial_tcp(destination, None).await?;
-
-        // 通过每个代理依次连接
-        for (i, outbound) in self.outbounds.iter().skip(1).enumerate() {
-            tracing::debug!(
-                hop = i + 1,
-                outbound = %outbound.tag(),
-                "Connecting through proxy chain"
-            );
-
-            // 通过前一个代理连接到下一个代理
-            current = outbound.dial_tcp(destination, None).await?;
-        }
-
-        tracing::info!(
-            hops = self.outbounds.len(),
-            "Successfully established chain connection"
-        );
-
-        Ok(current)
+    fn last_tag(&self) -> Result<&str> {
+        self.outbound_tags
+            .last()
+            .map(String::as_str)
+            .context("chain: empty outbounds")
     }
 }
 
@@ -57,60 +57,28 @@ impl Outbound for ChainOutbound {
     }
 
     fn kind(&self) -> &str {
-        "chain"
+        rsb_constant::TYPE_CHAIN
     }
 
     fn networks(&self) -> &[Network] {
-        // 取所有代理支持的网络类型的交集
-        if self.outbounds.is_empty() {
-            return &[];
-        }
-
-        let first_networks = self.outbounds[0].networks();
-        if self.outbounds.len() == 1 {
-            return first_networks;
-        }
-
-        // 简化实现：如果所有代理都支持 TCP 和 UDP，返回两者
-        let all_support_tcp = self.outbounds.iter().all(|ob| {
-            ob.networks().contains(&Network::Tcp)
-        });
-
-        let all_support_udp = self.outbounds.iter().all(|ob| {
-            ob.networks().contains(&Network::Udp)
-        });
-
-        if all_support_tcp && all_support_udp {
-            &[Network::Tcp, Network::Udp]
-        } else if all_support_tcp {
-            &[Network::Tcp]
-        } else {
-            &[]
-        }
+        &[Network::Tcp, Network::Udp]
     }
 
     async fn dial_tcp(
         &self,
         destination: SocketAddr,
-        _domain: Option<&str>,
+        domain: Option<&str>,
     ) -> Result<ProxyConn, BoxError> {
-        self.dial_through_chain(destination).await.map_err(Into::into)
+        let tag = self.last_tag()?;
+        self.shared.get()?.get(tag)?.dial_tcp(destination, domain).await
     }
 
-    async fn dial_udp(&self) -> Result<rsb_core::ProxyUdpSocket, BoxError> {
-        // 链式代理的 UDP 实现较复杂，需要每一跳都支持
-        anyhow::bail!("UDP through chain proxy not implemented yet")
+    async fn dial_udp(&self, destination: SocketAddr) -> Result<ProxyUdpSocket, BoxError> {
+        let tag = self.last_tag()?;
+        self.shared.get()?.get(tag)?.dial_udp(destination).await
     }
-}
 
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_chain_creation() {
-        let chain = ChainOutbound::new("chain".to_string(), vec![]);
-        assert_eq!(chain.tag(), "chain");
-        assert_eq!(chain.kind(), "chain");
+    async fn close(&self) -> Result<(), BoxError> {
+        Ok(())
     }
 }

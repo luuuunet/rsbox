@@ -1,0 +1,67 @@
+{
+  "log": {
+    "level": "debug",
+    "timestamp": true
+  },
+  "dns": {
+    "servers": [
+      {
+        "tag": "local-dns",
+        "address": "223.5.5.5"
+      }
+    ],
+    "final": "local-dns",
+    "strategy": "prefer_ipv4"
+  },
+  "inbounds": [
+    {
+      "type": "mixed",
+      "tag": "mixed-in",
+      "listen": "127.0.0.1",
+      "listen_port": 17890,
+      "sniff": true,
+      "sniff_override_destination": false
+    }
+  ],
+  "outbounds": [
+    {
+      "type": "shadowsocks",
+      "tag": "proxy",
+      "server": "YOUR_SERVER",
+      "server_port": 8388,
+      "method": "2022-blake3-aes-128-gcm",
+      "password": "YOUR_SS_PASSWORD",
+      "detour": "shadowtls-out"
+    },
+    {
+      "type": "shadowtls",
+      "tag": "shadowtls-out",
+      "server": "YOUR_SERVER",
+      "server_port": 443,
+      "version": 3,
+      "password": "YOUR_ST_PASSWORD",
+      "strict_mode": false,
+      "tls": {
+        "enabled": true,
+        "server_name": "www.cloudflare.com",
+        "insecure": true
+      }
+    },
+    {
+      "type": "selector",
+      "tag": "节点选择",
+      "outbounds": [
+        "proxy"
+      ],
+      "default": "proxy"
+    },
+    {
+      "type": "direct",
+      "tag": "direct"
+    }
+  ],
+  "route": {
+    "auto_detect_interface": true,
+    "final": "proxy"
+  }
+}

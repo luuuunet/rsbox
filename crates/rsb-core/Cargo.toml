@@ -14,7 +14,9 @@ rsb-constant.workspace = true
 serde_json.workspace = true
 socket2 = { version = "0.6", features = ["all"] }
 tokio.workspace = true
+sha2.workspace = true
 tracing.workspace = true
+uuid.workspace = true
 
 [target.'cfg(unix)'.dependencies]
 libc.workspace = true

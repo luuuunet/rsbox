@@ -17,9 +17,11 @@ pub async fn tcp_connect(server: &str, port: u16) -> Result<TcpStream> {
         .with_context(|| format!("resolve {server}:{port}"))?
         .next()
         .with_context(|| format!("no address for {server}:{port}"))?;
-    TcpStream::connect(addr)
+    let stream = TcpStream::connect(addr)
         .await
-        .with_context(|| format!("connect {server}:{port}"))
+        .with_context(|| format!("connect {server}:{port}"))?;
+    let _ = stream.set_nodelay(true);
+    Ok(stream)
 }
 
 pub fn build_tls_config(raw: Option<&Value>, insecure: bool) -> Result<Arc<ClientConfig>> {
@@ -96,6 +98,43 @@ pub(crate) async fn tls_connect_plain(
     ))
 }
 
+/// TLS handshake over an existing TCP/proxy stream (e.g. after detour).
+pub async fn tls_over_stream(
+    stream: rsb_core::ProxyConn,
+    tls: Option<&Value>,
+    server: &str,
+    sni: Option<&str>,
+) -> Result<rsb_core::ProxyConn> {
+    if crate::reality::is_reality(tls) {
+        anyhow::bail!("reality over detour stream is not supported");
+    }
+    if crate::utls::utls_enabled(tls) {
+        anyhow::bail!("utls over detour stream is not supported");
+    }
+    let insecure = tls
+        .and_then(|t| t.get("insecure"))
+        .and_then(|v| v.as_bool())
+        .unwrap_or(false);
+    let server_name = sni
+        .map(str::to_string)
+        .or_else(|| {
+            tls.and_then(|t| t.get("server_name"))
+                .and_then(|v| v.as_str())
+                .map(str::to_string)
+        })
+        .unwrap_or_else(|| server.to_string());
+    let cfg = build_tls_config(tls, insecure)?;
+    let name = ServerName::try_from(server_name.as_str())
+        .map_err(|_| anyhow::anyhow!("invalid sni: {server_name}"))?
+        .to_owned();
+    Ok(rsb_core::proxy_box(
+        TlsConnector::from(cfg)
+            .connect(name, stream)
+            .await
+            .context("tls handshake over detour")?,
+    ))
+}
+
 #[derive(Debug)]
 pub struct SkipVerifier;
 
@@ -155,6 +194,44 @@ pub fn encode_socks_address(addr: SocketAddr) -> Vec<u8> {
     }
 }
 
+pub enum DecodedSocksAddr {
+    Ip(SocketAddr),
+    Domain(String, u16),
+}
+
+pub fn decode_socks_address(data: &[u8]) -> Result<(DecodedSocksAddr, usize)> {
+    use anyhow::Context;
+    use std::net::{Ipv4Addr, Ipv6Addr};
+    if data.is_empty() {
+        anyhow::bail!("empty socks address");
+    }
+    match data[0] {
+        0x01 if data.len() >= 7 => {
+            let ip = Ipv4Addr::new(data[1], data[2], data[3], data[4]);
+            let port = u16::from_be_bytes([data[5], data[6]]);
+            Ok((DecodedSocksAddr::Ip(SocketAddr::from((ip, port))), 7))
+        }
+        0x04 if data.len() >= 19 => {
+            let ip = Ipv6Addr::from(<[u8; 16]>::try_from(&data[1..17]).context("ipv6")?);
+            let port = u16::from_be_bytes([data[17], data[18]]);
+            Ok((DecodedSocksAddr::Ip(SocketAddr::from((ip, port))), 19))
+        }
+        0x03 => {
+            let len = data[1] as usize;
+            if data.len() < 2 + len + 2 {
+                anyhow::bail!("truncated domain socks address");
+            }
+            let host = std::str::from_utf8(&data[2..2 + len]).context("domain utf8")?;
+            let port = u16::from_be_bytes([data[2 + len], data[2 + len + 1]]);
+            Ok((
+                DecodedSocksAddr::Domain(host.to_string(), port),
+                2 + len + 2,
+            ))
+        }
+        atyp => anyhow::bail!("unsupported socks address type {atyp}"),
+    }
+}
+
 pub fn encode_vless_address(dest: SocketAddr) -> Vec<u8> {
     match dest {
         SocketAddr::V4(v4) => {
@@ -178,4 +255,59 @@ pub fn sha224_hex(data: &str) -> String {
     use sha2::{Digest, Sha224};
     let hash = Sha224::digest(data.as_bytes());
     hash.iter().map(|b| format!("{b:02x}")).collect()
+}
+
+/// sing-box trojan key: hex-encoded SHA-224(password) as 56 ASCII bytes.
+pub fn trojan_key(password: &str) -> [u8; 56] {
+    use sha2::{Digest, Sha224};
+    let hash = Sha224::digest(password.as_bytes());
+    let mut key = [0u8; 56];
+    for (i, byte) in hash.iter().enumerate() {
+        key[i * 2] = hex_digit(byte >> 4);
+        key[i * 2 + 1] = hex_digit(byte & 0x0f);
+    }
+    key
+}
+
+fn hex_digit(v: u8) -> u8 {
+    b"0123456789abcdef"[v as usize]
+}
+
+const TROJAN_CMD_TCP: u8 = 1;
+const TROJAN_CMD_UDP: u8 = 3;
+
+/// sing-box / trojan-go binary request header.
+pub fn encode_trojan_request(key: &[u8; 56], dest: SocketAddr, command: u8) -> Vec<u8> {
+    let mut buf = Vec::with_capacity(56 + 2 + 1 + 20 + 2);
+    buf.extend_from_slice(key);
+    buf.extend_from_slice(b"\r\n");
+    buf.push(command);
+    buf.extend_from_slice(&encode_socks_address(dest));
+    buf.extend_from_slice(b"\r\n");
+    buf
+}
+
+pub fn encode_trojan_tcp(key: &[u8; 56], dest: SocketAddr) -> Vec<u8> {
+    encode_trojan_request(key, dest, TROJAN_CMD_TCP)
+}
+
+pub fn encode_trojan_udp(key: &[u8; 56], dest: SocketAddr) -> Vec<u8> {
+    encode_trojan_request(key, dest, TROJAN_CMD_UDP)
+}
+
+/// sing-vmess / vless socksaddr with port before address.
+pub fn encode_port_first_socksaddr(dest: SocketAddr) -> Vec<u8> {
+    let mut buf = Vec::new();
+    buf.extend_from_slice(&dest.port().to_be_bytes());
+    match dest {
+        SocketAddr::V4(v4) => {
+            buf.push(0x01);
+            buf.extend_from_slice(&v4.ip().octets());
+        }
+        SocketAddr::V6(v6) => {
+            buf.push(0x03);
+            buf.extend_from_slice(&v6.ip().octets());
+        }
+    }
+    buf
 }

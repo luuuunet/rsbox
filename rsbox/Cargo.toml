@@ -11,6 +11,7 @@ path = "src/main.rs"
 [dependencies]
 anyhow.workspace = true
 clap.workspace = true
+rustls.workspace = true
 rsb-config.workspace = true
 rsb-constant.workspace = true
 rsb-api.workspace = true

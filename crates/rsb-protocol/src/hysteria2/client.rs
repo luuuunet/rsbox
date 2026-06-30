@@ -10,23 +10,36 @@ use serde_json::Value;
 use std::net::SocketAddr;
 use std::sync::atomic::{AtomicBool, AtomicU16, AtomicU32, Ordering};
 use std::sync::Arc;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
 static SESSION_COUNTER: AtomicU32 = AtomicU32::new(1);
+
+const DEFAULT_IDLE_TIMEOUT: Duration = Duration::from_secs(60);
+const DEFAULT_KEEP_ALIVE: Duration = Duration::from_secs(5);
+const DEFAULT_PROBE_INTERVAL: Duration = Duration::from_secs(20);
+const DEFAULT_STREAM_OPEN_TIMEOUT: Duration = Duration::from_secs(8);
+const DEFAULT_MAX_SESSION_AGE: Duration = Duration::from_secs(30 * 60);
+const PROBE_STREAM_TIMEOUT: Duration = Duration::from_secs(4);
 
 struct Hy2Session {
     endpoint: Endpoint,
     connection: Arc<quinn::Connection>,
     port: u16,
+    generation: u32,
+    created_at: Instant,
     /// Keeps the H3 driver alive without closing the underlying QUIC connection.
     _h3_keep_alive: tokio::task::JoinHandle<()>,
 }
 
 struct Hy2Shared {
     session: tokio::sync::Mutex<Option<Hy2Session>>,
+    /// Ensures only one reconnect runs at a time (prevents orphan QUIC sessions).
+    connect_lock: tokio::sync::Mutex<()>,
     current_port: AtomicU16,
+    generation: AtomicU32,
     hop_task_started: AtomicBool,
+    probe_task_started: AtomicBool,
     port: u16,
     port_start: Option<u16>,
     port_end: Option<u16>,
@@ -47,7 +60,10 @@ pub struct Hysteria2Outbound {
     obfs: Option<Arc<obfs::Salamander>>,
     idle_timeout: Duration,
     keep_alive_period: Duration,
-    disable_mtu_discovery: bool,  // ✅ 新增配置
+    probe_interval: Duration,
+    stream_open_timeout: Duration,
+    max_session_age: Duration,
+    disable_mtu_discovery: bool,
     shared: Arc<Hy2Shared>,
 }
 
@@ -123,20 +139,38 @@ impl Hysteria2Outbound {
                 .get("idle_timeout")
                 .and_then(|v| v.as_str())
                 .and_then(parse_duration_str)
-                .unwrap_or(Duration::from_secs(30)),
+                .unwrap_or(DEFAULT_IDLE_TIMEOUT),
             keep_alive_period: raw
                 .get("keep_alive_period")
                 .and_then(|v| v.as_str())
                 .and_then(parse_duration_str)
-                .unwrap_or(Duration::from_secs(10)),
+                .unwrap_or(DEFAULT_KEEP_ALIVE),
+            probe_interval: raw
+                .get("probe_interval")
+                .and_then(|v| v.as_str())
+                .and_then(parse_duration_str)
+                .unwrap_or(DEFAULT_PROBE_INTERVAL),
+            stream_open_timeout: raw
+                .get("stream_open_timeout")
+                .and_then(|v| v.as_str())
+                .and_then(parse_duration_str)
+                .unwrap_or(DEFAULT_STREAM_OPEN_TIMEOUT),
+            max_session_age: raw
+                .get("max_session_age")
+                .and_then(|v| v.as_str())
+                .and_then(parse_duration_str)
+                .unwrap_or(DEFAULT_MAX_SESSION_AGE),
             disable_mtu_discovery: raw
                 .get("disable_mtu_discovery")
                 .and_then(|v| v.as_bool())
-                .unwrap_or(false),  // ✅ 解析配置
+                .unwrap_or(false),
             shared: Arc::new(Hy2Shared {
                 session: tokio::sync::Mutex::new(None),
+                connect_lock: tokio::sync::Mutex::new(()),
                 current_port: AtomicU16::new(port),
+                generation: AtomicU32::new(0),
                 hop_task_started: AtomicBool::new(false),
+                probe_task_started: AtomicBool::new(false),
                 port,
                 port_start,
                 port_end,
@@ -168,39 +202,115 @@ impl Hysteria2Outbound {
         reset_session(&self.shared, reason).await;
     }
 
+    fn session_is_usable(session: &Hy2Session, port: u16, max_age: Duration) -> bool {
+        session.port == port
+            && session.connection.close_reason().is_none()
+            && session.created_at.elapsed() < max_age
+    }
+
+    async fn cached_connection(&self, port: u16) -> Option<Arc<quinn::Connection>> {
+        let guard = self.shared.session.lock().await;
+        guard.as_ref().and_then(|session| {
+            if Self::session_is_usable(session, port, self.max_session_age) {
+                Some(session.connection.clone())
+            } else {
+                None
+            }
+        })
+    }
+
+    /// Acquire a live QUIC connection, reusing the cached session when possible.
     async fn get_connection(&self) -> Result<Arc<quinn::Connection>> {
         self.maybe_start_port_hopping();
+        self.maybe_start_probe_loop();
 
-        let current_port = self.shared.current_port.load(Ordering::Relaxed);
-        {
-            let guard = self.shared.session.lock().await;
-            if let Some(session) = guard.as_ref() {
-                if session.port == current_port && session.connection.close_reason().is_none() {
-                    return Ok(session.connection.clone());
-                }
-            }
+        let port = self.shared.current_port.load(Ordering::Relaxed);
+        if let Some(conn) = self.cached_connection(port).await {
+            return Ok(conn);
         }
 
-        self.reset_session("reconnect").await;
-        let session = self.connect_session(current_port).await?;
+        // Single-flight reconnect: concurrent callers wait on the same mutex.
+        let _connect_guard = self.shared.connect_lock.lock().await;
+
+        if let Some(conn) = self.cached_connection(port).await {
+            return Ok(conn);
+        }
+
+        reset_session(&self.shared, "reconnect").await;
+
+        let generation = self.shared.generation.fetch_add(1, Ordering::Relaxed) + 1;
+        let session = self.connect_session(port).await?;
         let conn = session.connection.clone();
-        self.spawn_close_watcher(session.connection.clone());
+        let conn_id = conn.stable_id();
+
+        self.spawn_close_watcher(conn.clone(), generation, conn_id);
         *self.shared.session.lock().await = Some(session);
+
         Ok(conn)
     }
 
-    fn spawn_close_watcher(&self, conn: Arc<quinn::Connection>) {
+    fn maybe_start_probe_loop(&self) {
+        if self.shared.probe_task_started.swap(true, Ordering::Relaxed) {
+            return;
+        }
+
         let shared = Arc::clone(&self.shared);
         let tag = self.tag.clone();
-        let conn_id = conn.stable_id();
+        let probe_interval = self.probe_interval;
+        let max_session_age = self.max_session_age;
+
+        tokio::spawn(async move {
+            loop {
+                tokio::time::sleep(probe_interval).await;
+
+                let probe_target = {
+                    let guard = shared.session.lock().await;
+                    guard.as_ref().and_then(|session| {
+                        if session.connection.close_reason().is_some()
+                            || session.created_at.elapsed() >= max_session_age
+                        {
+                            return None;
+                        }
+                        Some((
+                            session.connection.clone(),
+                            session.generation,
+                            session.connection.stable_id(),
+                        ))
+                    })
+                };
+
+                let Some((conn, generation, conn_id)) = probe_target else {
+                    continue;
+                };
+
+                if !probe_connection(&conn).await {
+                    tracing::warn!(
+                        tag = %tag,
+                        conn_id,
+                        generation,
+                        "hysteria2: probe failed, resetting session"
+                    );
+                    reset_session(&shared, "probe failed").await;
+                }
+            }
+        });
+    }
+
+    fn spawn_close_watcher(
+        &self,
+        conn: Arc<quinn::Connection>,
+        generation: u32,
+        conn_id: usize,
+    ) {
+        let shared = Arc::clone(&self.shared);
+        let tag = self.tag.clone();
         tokio::spawn(async move {
             conn.closed().await;
-            tracing::debug!(tag = %tag, conn_id, "hysteria2: quic connection closed");
+            tracing::debug!(tag = %tag, conn_id, generation, "hysteria2: quic connection closed");
             let mut guard = shared.session.lock().await;
-            if guard
-                .as_ref()
-                .is_some_and(|s| s.connection.stable_id() == conn_id)
-            {
+            if guard.as_ref().is_some_and(|s| {
+                s.connection.stable_id() == conn_id && s.generation == generation
+            }) {
                 *guard = None;
             }
         });
@@ -238,13 +348,9 @@ impl Hysteria2Outbound {
                 .try_into()
                 .map_err(|e| anyhow::anyhow!("invalid hysteria2 idle_timeout: {e}"))?,
         ));
-
-        // ✅ 应用 disable_mtu_discovery 配置
         if !self.disable_mtu_discovery {
-            // 启用 MTU 发现
             transport_cfg.mtu_discovery_config(Some(quinn::MtuDiscoveryConfig::default()));
         }
-
         client_cfg.transport_config(Arc::new(transport_cfg));
 
         let addr = tokio::net::lookup_host(format!("{}:{}", self.server, port))
@@ -253,7 +359,7 @@ impl Hysteria2Outbound {
             .next()
             .context("no hysteria2 server address")?;
 
-        let mut endpoint = if let Some(ref obfs) = self.obfs {
+        let endpoint = if let Some(ref obfs) = self.obfs {
             let (mut ep, _) = obfs_socket::endpoint_with_obfs("0.0.0.0:0".parse()?, obfs.clone())?;
             ep.set_default_client_config(client_cfg);
             ep
@@ -263,21 +369,25 @@ impl Hysteria2Outbound {
             ep
         };
 
+        let connect_fut = endpoint.connect(addr, &sni)?;
         let connection = Arc::new(
-            endpoint
-                .connect(addr, &sni)?
+            tokio::time::timeout(self.stream_open_timeout, connect_fut)
                 .await
+                .context("hysteria2: quic connect timeout")?
                 .context("quic connect")?,
         );
 
         let h3_keep_alive = self.authenticate(&connection).await?;
+        let generation = self.shared.generation.load(Ordering::Relaxed);
 
         tracing::info!(
             tag = %self.tag,
             server = %self.server,
             port,
+            generation,
             idle_timeout_secs = self.idle_timeout.as_secs(),
             keep_alive_secs = self.keep_alive_period.as_secs(),
+            probe_interval_secs = self.probe_interval.as_secs(),
             disable_mtu_discovery = self.disable_mtu_discovery,
             "hysteria2: session established"
         );
@@ -286,11 +396,16 @@ impl Hysteria2Outbound {
             endpoint,
             connection,
             port,
+            generation,
+            created_at: Instant::now(),
             _h3_keep_alive: h3_keep_alive,
         })
     }
 
-    async fn authenticate(&self, connection: &quinn::Connection) -> Result<tokio::task::JoinHandle<()>> {
+    async fn authenticate(
+        &self,
+        connection: &quinn::Connection,
+    ) -> Result<tokio::task::JoinHandle<()>> {
         let h3_conn = H3QuinnConnection::new(connection.clone());
         let (mut driver, mut send_request) = h3::client::new(h3_conn).await.context("h3 client")?;
 
@@ -323,8 +438,6 @@ impl Hysteria2Outbound {
             tokio::select! {
                 result = &mut auth_fut => {
                     result?;
-                    // Hy2 data plane uses raw QUIC streams. Leak the H3 driver without
-                    // poll_close — graceful H3 shutdown closes the QUIC connection.
                     std::mem::forget(driver);
                     return Ok(tokio::spawn(async {
                         std::future::pending::<()>().await
@@ -337,13 +450,27 @@ impl Hysteria2Outbound {
         }
     }
 
+    async fn open_bi_with_timeout(
+        &self,
+        conn: &quinn::Connection,
+    ) -> Result<(quinn::SendStream, quinn::RecvStream)> {
+        match tokio::time::timeout(self.stream_open_timeout, conn.open_bi()).await {
+            Ok(Ok(streams)) => Ok(streams),
+            Ok(Err(e)) => Err(e.into()),
+            Err(_) => anyhow::bail!("hysteria2: open stream timeout"),
+        }
+    }
+
     async fn dial_tcp_inner(
         &self,
         destination: SocketAddr,
         domain: Option<&str>,
     ) -> Result<ProxyConn, BoxError> {
         let conn = self.get_connection().await?;
-        let (mut send, mut recv) = conn.open_bi().await.context("open hy2 stream")?;
+        let (mut send, mut recv) = self
+            .open_bi_with_timeout(&conn)
+            .await
+            .context("open hy2 stream")?;
 
         let target = if let Some(domain) = domain {
             format!("{}:{}", domain, destination.port())
@@ -401,7 +528,7 @@ impl Outbound for Hysteria2Outbound {
                 );
                 self.reset_session("dial retry").await;
                 self.dial_tcp_inner(destination, domain).await
-            },
+            }
         }
     }
     async fn dial_udp(&self, _destination: SocketAddr) -> Result<ProxyUdpSocket, BoxError> {
@@ -410,7 +537,7 @@ impl Outbound for Hysteria2Outbound {
             Err(_) => {
                 self.reset_session("udp dial retry").await;
                 self.get_connection().await?
-            },
+            }
         };
         let session_id = SESSION_COUNTER.fetch_add(1, Ordering::Relaxed);
         Ok(udp_client::hy2_udp_socket(conn, session_id))
@@ -421,10 +548,36 @@ impl Outbound for Hysteria2Outbound {
     }
 }
 
+/// Open a bidirectional stream to verify the QUIC path is still alive.
+async fn probe_connection(conn: &quinn::Connection) -> bool {
+    if conn.close_reason().is_some() {
+        return false;
+    }
+
+    match tokio::time::timeout(PROBE_STREAM_TIMEOUT, conn.open_bi()).await {
+        Ok(Ok((mut send, recv))) => {
+            let _ = send.reset(0u32.into());
+            drop(recv);
+            drop(send);
+            true
+        }
+        Ok(Err(e)) => {
+            tracing::debug!(error = %e, "hysteria2: probe open_bi failed");
+            false
+        }
+        Err(_) => {
+            tracing::debug!("hysteria2: probe open_bi timeout");
+            false
+        }
+    }
+}
+
 async fn reset_session(shared: &Hy2Shared, reason: &str) {
     let mut guard = shared.session.lock().await;
     if let Some(session) = guard.take() {
+        shared.generation.fetch_add(1, Ordering::Relaxed);
         session.connection.close(0u32.into(), reason.as_bytes());
+        // Dropping session closes the Endpoint and releases the local UDP socket.
     }
 }
 

@@ -15,7 +15,7 @@ use crate::utls::{
     UtlsTlsStream,
 };
 
-const XRAY_REALITY_VERSION: (u8, u8, u8) = (0, 0, 0);
+const XRAY_REALITY_VERSION: (u8, u8, u8) = (1, 8, 1);
 
 fn reality_version(tls: &Value) -> (u8, u8, u8) {
     tls.get("reality")
@@ -41,11 +41,11 @@ pub async fn connect(
     reality_connect(server, port, tls.context("reality tls")?, sni).await
 }
 
-struct RealityConfig {
-    public_key: PublicKey,
-    short_id: [u8; 8],
-    server_name: String,
-    fingerprint: Profile,
+pub(crate) struct RealityConfig {
+    pub(crate) public_key: PublicKey,
+    pub(crate) short_id: [u8; 8],
+    pub(crate) server_name: String,
+    pub(crate) fingerprint: Profile,
 }
 
 fn parse_reality(tls: &Value) -> Result<RealityConfig> {
@@ -64,9 +64,14 @@ fn parse_reality(tls: &Value) -> Result<RealityConfig> {
         .get("short_id")
         .and_then(|v| v.as_str())
         .unwrap_or("");
-    let server_name = reality
+    let server_name = tls
         .get("server_name")
         .and_then(|v| v.as_str())
+        .or_else(|| {
+            reality
+                .get("server_name")
+                .and_then(|v| v.as_str())
+        })
         .or_else(|| {
             reality
                 .get("server_names")
@@ -74,7 +79,7 @@ fn parse_reality(tls: &Value) -> Result<RealityConfig> {
                 .and_then(|a| a.first())
                 .and_then(|v| v.as_str())
         })
-        .unwrap_or("www.cloudflare.com")
+        .unwrap_or("www.microsoft.com")
         .to_string();
     let fp = reality
         .get("fingerprint")
@@ -123,7 +128,7 @@ fn decode_hex(s: &str) -> Vec<u8> {
 }
 
 /// Xray REALITY SessionId auth (HKDF + AES-GCM over first 16 bytes).
-fn patch_reality_session(
+pub(crate) fn patch_reality_session(
     keys: &ClientHelloKeys,
     cfg: &RealityConfig,
     tls: &Value,
@@ -131,7 +136,7 @@ fn patch_reality_session(
     let ver = reality_version(tls);
     let mut hello = keys.hello.clone();
     let layout = hello_layout(&hello).context("reality hello layout")?;
-    let random = client_hello_random(&hello).context("reality random")?;
+    let random = *client_hello_random(&hello).context("reality random")?;
 
     let mut session_plain = [0u8; 32];
     session_plain[0] = ver.0;
@@ -144,6 +149,10 @@ fn patch_reality_session(
         .as_secs() as u32;
     session_plain[4..8].copy_from_slice(&ts.to_be_bytes());
     session_plain[8..16].copy_from_slice(&cfg.short_id);
+
+    // Xray: AAD uses ClientHello with SessionId field zeroed (Raw[39:71] = 0 before Seal).
+    hello[layout.session_id_offset..layout.session_id_offset + 32].fill(0);
+    let aad = hello[5..].to_vec();
 
     let shared = keys.secret.diffie_hellman(&cfg.public_key);
     let mut auth_key = [0u8; 32];
@@ -158,7 +167,7 @@ fn patch_reality_session(
             nonce,
             Payload {
                 msg: &session_plain[..16],
-                aad: &hello,
+                aad: &aad,
             },
         )
         .map_err(|e| anyhow::anyhow!("reality seal: {e}"))?;
@@ -200,5 +209,37 @@ mod tests {
         let keys = generate_client_hello(Profile::Chrome, "example.com");
         let layout = hello_layout(&keys.hello).unwrap();
         assert!(layout.session_id_offset + 32 <= keys.hello.len());
+    }
+
+    #[test]
+    fn dump_reality_hello() {
+        use base64::Engine;
+        let mut pk = [0u8; 32];
+        pk.copy_from_slice(
+            &base64::engine::general_purpose::URL_SAFE_NO_PAD
+                .decode("VdvA1In4Po7ugbQHYIm518Vw5u72SFokjyTY4XwByRw")
+                .unwrap(),
+        );
+        let cfg = RealityConfig {
+            public_key: PublicKey::from(pk),
+            short_id: decode_short_id("a1b2c3d4"),
+            server_name: "www.cloudflare.com".into(),
+            fingerprint: Profile::Chrome,
+        };
+        let keys = generate_client_hello(Profile::Chrome, "www.cloudflare.com");
+        let (hello, _) = patch_reality_session(
+            &keys,
+            &cfg,
+            &serde_json::json!({"reality": {}}),
+        )
+        .unwrap();
+        println!(
+            "hello_b64={}",
+            base64::engine::general_purpose::STANDARD.encode(&hello)
+        );
+        println!(
+            "secret_b64={}",
+            base64::engine::general_purpose::STANDARD.encode(keys.secret.as_bytes())
+        );
     }
 }

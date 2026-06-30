@@ -25,6 +25,7 @@ pub const TYPE_HYSTERIA2: &str = "hysteria2";
 pub const TYPE_TAILSCALE: &str = "tailscale";
 pub const TYPE_SELECTOR: &str = "selector";
 pub const TYPE_URLTEST: &str = "urltest";
+pub const TYPE_CHAIN: &str = "chain";
 
 pub const TYPE_SERVICE_API: &str = "api";
 pub const TYPE_SERVICE_DERP: &str = "derp";
@@ -64,6 +65,7 @@ pub const ALL_OUTBOUND_TYPES: &[&str] = &[
     TYPE_BLOCK,
     TYPE_SELECTOR,
     TYPE_URLTEST,
+    TYPE_CHAIN,
     TYPE_SOCKS,
     TYPE_HTTP,
     TYPE_SHADOWSOCKS,

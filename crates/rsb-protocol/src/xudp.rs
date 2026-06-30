@@ -44,7 +44,7 @@ pub fn global_id_for(source: Option<SocketAddr>) -> [u8; 8] {
 
 pub async fn xudp_over_stream<S>(stream: S, source: Option<SocketAddr>) -> ProxyUdpSocket
 where
-    S: AsyncRead + AsyncWrite + Send + Sync + Unpin + 'static,
+    S: AsyncRead + AsyncWrite + Send + Unpin + 'static,
 {
     let (reader, writer) = tokio::io::split(stream);
     let (tx, rx) = tokio::sync::mpsc::unbounded_channel();
@@ -85,7 +85,7 @@ struct XudpWriter<W> {
 #[async_trait]
 impl<W> ProxyUdpIo for XudpIo<W>
 where
-    W: AsyncWrite + Send + Sync + Unpin,
+    W: AsyncWrite + Send + Unpin,
 {
     async fn send_to(&self, buf: &[u8], target: SocketAddr) -> std::io::Result<usize> {
         let mut guard = self.writer.lock().await;

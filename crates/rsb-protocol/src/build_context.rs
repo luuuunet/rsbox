@@ -1,5 +1,7 @@
 use rsb_config::Options;
 use rsb_dns::{register_resolved_service, DnsRouter};
+use std::collections::HashMap;
+use std::net::SocketAddr;
 use std::sync::Arc;
 
 #[derive(Clone)]
@@ -7,6 +9,7 @@ pub struct BuildContext {
     pub dns: Arc<DnsRouter>,
     pub default_outbound_tag: String,
     pub bind_interface: Option<String>,
+    pub inbound_listen_by_tag: HashMap<String, SocketAddr>,
 }
 
 impl BuildContext {
@@ -26,6 +29,7 @@ impl BuildContext {
             dns,
             default_outbound_tag: options.default_outbound_tag()?,
             bind_interface,
+            inbound_listen_by_tag: HashMap::new(),
         })
     }
 }

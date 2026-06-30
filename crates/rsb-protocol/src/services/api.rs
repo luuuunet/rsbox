@@ -9,6 +9,7 @@ use axum::{
     routing::{get, post},
     Json, Router,
 };
+use rsb_config::Options;
 use serde_json::Value;
 use std::net::SocketAddr;
 use std::sync::Arc;
@@ -68,6 +69,7 @@ impl ApiService {
             .route("/connections/close", post(close_connection))
             .route("/connections/close/all", post(close_all_connections))
             .route("/stats", get(stats))
+            .route("/reload", post(reload_config))
             .route("/selector/select", post(select_outbound))
             .route("/urltest", post(url_test))
             .with_state(state);
@@ -166,15 +168,14 @@ async fn outbounds(
     if !auth(&headers, &state.users) {
         return Err(StatusCode::UNAUTHORIZED);
     }
-    let list: Vec<_> = state
-        .ctx
-        .options
+    let opts = state.ctx.options_snapshot();
+    let list: Vec<_> = opts
         .outbounds
         .iter()
         .enumerate()
         .map(|(i, ob)| {
             serde_json::json!({
-                "tag": state.ctx.options.outbound_tag(ob, i),
+                "tag": opts.outbound_tag(ob, i),
                 "type": ob.kind,
             })
         })
@@ -279,11 +280,41 @@ async fn stats(
     if !auth(&headers, &state.users) {
         return Err(StatusCode::UNAUTHORIZED);
     }
+    let stat: Vec<_> = state
+        .ctx
+        .connections
+        .v2ray_stat_entries()
+        .into_iter()
+        .map(|(name, value)| serde_json::json!({ "name": name, "value": value }))
+        .collect();
+    let opts = state.ctx.options_snapshot();
     Ok(Json(serde_json::json!({
         "connections": state.ctx.connections.list().len(),
-        "outbounds": state.ctx.options.outbounds.len(),
-        "inbounds": state.ctx.options.inbounds.len(),
+        "outbounds": opts.outbounds.len(),
+        "inbounds": opts.inbounds.len(),
+        "stat": stat,
     })))
+}
+
+async fn reload_config(
+    State(state): State<ApiState>,
+    headers: HeaderMap,
+    body: Option<Json<Options>>,
+) -> Result<Json<Value>, StatusCode> {
+    if !auth(&headers, &state.users) {
+        return Err(StatusCode::UNAUTHORIZED);
+    }
+    let Some(reload) = state.ctx.reload.as_ref() else {
+        return Err(StatusCode::NOT_IMPLEMENTED);
+    };
+    match body {
+        Some(Json(options)) => reload
+            .reload(options)
+            .await
+            .map_err(|_| StatusCode::BAD_REQUEST)?,
+        None => reload.reload_users(),
+    }
+    Ok(Json(serde_json::json!({ "ok": true })))
 }
 
 #[derive(serde::Deserialize)]

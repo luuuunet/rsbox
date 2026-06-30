@@ -148,5 +148,10 @@ pub fn parse_listen(raw: &Value) -> Result<SocketAddr> {
         .get("listen_port")
         .and_then(|v| v.as_u64())
         .unwrap_or(1080) as u16;
-    Ok(format!("{listen}:{port}").parse()?)
+    let host = if listen.contains(':') && !listen.starts_with('[') {
+        format!("[{listen}]")
+    } else {
+        listen.to_string()
+    };
+    Ok(format!("{host}:{port}").parse()?)
 }

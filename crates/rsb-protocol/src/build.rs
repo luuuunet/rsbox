@@ -4,6 +4,7 @@ use crate::registry::{
 };
 use rsb_config::Options;
 use rsb_core::{Dialer, SharedOutboundManager};
+use std::net::SocketAddr;
 use std::sync::Arc;
 
 pub use crate::group::{OutboundController, SelectorControl};
@@ -33,13 +34,26 @@ pub fn build_outbounds(
 
 pub fn build_inbounds(
     options: &Options,
-    ctx: BuildContext,
+    mut ctx: BuildContext,
     dialer: Arc<Dialer>,
 ) -> anyhow::Result<Vec<Box<dyn rsb_core::Inbound>>> {
+    ctx.inbound_listen_by_tag = inbound_listen_map(options);
     let mut inbounds = Vec::new();
     for (i, ib) in options.inbounds.iter().enumerate() {
         let tag = options.inbound_tag(ib, i);
         inbounds.push(registry_build_inbound(ib, tag, &ctx, dialer.clone())?);
     }
     Ok(inbounds)
+}
+
+fn inbound_listen_map(options: &Options) -> std::collections::HashMap<String, SocketAddr> {
+    use std::collections::HashMap;
+    let mut map = HashMap::new();
+    for (i, ib) in options.inbounds.iter().enumerate() {
+        let tag = options.inbound_tag(ib, i);
+        if let Ok(addr) = crate::direct::parse_listen(&ib.raw) {
+            map.insert(tag, addr);
+        }
+    }
+    map
 }

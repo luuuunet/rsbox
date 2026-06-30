@@ -15,6 +15,7 @@ use tokio::net::UdpSocket;
 #[derive(Clone)]
 pub struct Hy2ServerConfig {
     pub listen: SocketAddr,
+    pub inbound_tag: String,
     pub cert_path: String,
     pub key_path: String,
     pub passwords: Vec<String>,
@@ -22,12 +23,15 @@ pub struct Hy2ServerConfig {
     pub down_mbps: u32,
     pub udp: bool,
     pub obfs_password: Option<String>,
+    pub connections: rsb_core::SharedConnectionManager,
 }
 
 struct AppState {
     passwords: Arc<HashSet<String>>,
     down_mbps: u32,
     udp: bool,
+    inbound_tag: String,
+    connections: rsb_core::SharedConnectionManager,
 }
 
 #[derive(Clone)]
@@ -47,6 +51,8 @@ pub async fn run(config: Arc<Hy2ServerConfig>) -> Result<()> {
         passwords: Arc::new(passwords),
         down_mbps: config.down_mbps,
         udp: config.udp,
+        inbound_tag: config.inbound_tag.clone(),
+        connections: config.connections.clone(),
     });
 
     let server_config = build_quinn_config(&config.cert_path, &config.key_path)?;
@@ -115,19 +121,22 @@ fn load_certs(path: &str) -> Result<Vec<CertificateDer<'static>>> {
 fn load_key(path: &str) -> Result<PrivateKeyDer<'static>> {
     let file = std::fs::File::open(path).with_context(|| format!("open key {path}"))?;
     let mut reader = std::io::BufReader::new(file);
-    let keys = rustls_pemfile::pkcs8_private_keys(&mut reader)
-        .collect::<Result<Vec<_>, _>>()
-        .context("read key pem")?;
-    keys.into_iter()
-        .next()
-        .map(PrivateKeyDer::Pkcs8)
+    rustls_pemfile::private_key(&mut reader)
+        .context("read key pem")?
         .ok_or_else(|| anyhow::anyhow!("no private key found in {path}"))
 }
 
 async fn serve_connection(state: Arc<AppState>, connection: quinn::Connection) -> Result<()> {
-    if !authenticate_via_h3(&state, &connection).await? {
-        return Ok(());
-    }
+    let auth_password = match authenticate_via_h3(&state, &connection).await? {
+        Some(pass) => pass,
+        None => return Ok(()),
+    };
+    let relay_ctx = relay::Hy2RelayCtx {
+        connections: state.connections.clone(),
+        inbound_tag: state.inbound_tag.clone(),
+        password: auth_password,
+        server_down_mbps: state.down_mbps,
+    };
     let udp_sessions: Arc<DashMap<u32, UdpSession>> = Arc::new(DashMap::new());
     let udp_enabled = state.udp;
     loop {
@@ -135,8 +144,9 @@ async fn serve_connection(state: Arc<AppState>, connection: quinn::Connection) -
             incoming = connection.accept_bi() => {
                 match incoming {
                     Ok((send, recv)) => {
+                        let ctx = relay_ctx.clone();
                         tokio::spawn(async move {
-                            if let Err(err) = relay::handle_tcp_stream(send, recv).await {
+                            if let Err(err) = relay::handle_tcp_stream(ctx, send, recv).await {
                                 tracing::debug!(error = %err, "hy2 tcp relay failed");
                             }
                         });
@@ -172,52 +182,57 @@ async fn serve_connection(state: Arc<AppState>, connection: quinn::Connection) -
     Ok(())
 }
 
-async fn authenticate_via_h3(state: &AppState, connection: &quinn::Connection) -> Result<bool> {
+async fn authenticate_via_h3(
+    state: &AppState,
+    connection: &quinn::Connection,
+) -> Result<Option<String>> {
     let h3_conn = Connection::new(connection.clone());
     let mut h3: h3::server::Connection<Connection, bytes::Bytes> = h3::server::builder()
         .build(h3_conn)
         .await
         .context("build h3 server")?;
     let Some(resolver) = h3.accept().await.context("h3 accept")? else {
-        return Ok(false);
+        return Ok(None);
     };
     let (req, mut stream) = resolver
         .resolve_request()
         .await
         .context("resolve h3 request")?;
-    if !try_authenticate(state, &req) {
-        let response = Response::builder()
-            .status(StatusCode::NOT_FOUND)
-            .body(())
-            .unwrap();
-        stream.send_response(response).await.ok();
+    if let Some(password) = try_authenticate(state, &req) {
+        let (status, headers) = auth::build_auth_response(state.udp, state.down_mbps);
+        let mut response = Response::builder().status(status);
+        for (k, v) in headers.iter() {
+            response = response.header(k, v);
+        }
+        stream
+            .send_response(response.body(()).unwrap())
+            .await
+            .context("send auth response")?;
         stream.finish().await.ok();
-        return Ok(false);
+        std::mem::forget(h3);
+        return Ok(Some(password));
     }
-    let (status, headers) = auth::build_auth_response(state.udp, state.down_mbps);
-    let mut response = Response::builder().status(status);
-    for (k, v) in headers.iter() {
-        response = response.header(k, v);
-    }
-    stream
-        .send_response(response.body(()).unwrap())
-        .await
-        .context("send auth response")?;
+    let response = Response::builder()
+        .status(StatusCode::NOT_FOUND)
+        .body(())
+        .unwrap();
+    stream.send_response(response).await.ok();
     stream.finish().await.ok();
-    drop(h3);
-    Ok(true)
+    Ok(None)
 }
 
-fn try_authenticate(state: &AppState, req: &Request<()>) -> bool {
+fn try_authenticate(state: &AppState, req: &Request<()>) -> Option<String> {
     let path = req.uri().path();
     let authority = req.uri().authority().map(|a| a.as_str());
     if !auth::is_auth_request(req.method(), path, authority) {
-        return false;
+        return None;
     }
-    let Some(auth_req) = auth::parse_auth_request(req.headers()) else {
-        return false;
-    };
-    state.passwords.contains(&auth_req.password)
+    let auth_req = auth::parse_auth_request(req.headers())?;
+    if state.passwords.contains(&auth_req.password) {
+        Some(auth_req.password)
+    } else {
+        None
+    }
 }
 
 async fn handle_udp_datagram(

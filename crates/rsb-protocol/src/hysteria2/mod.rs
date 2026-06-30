@@ -43,7 +43,11 @@ pub struct Hysteria2Inbound {
 }
 
 impl Hysteria2Inbound {
-    pub fn new(tag: String, raw: Value) -> Result<Self> {
+    pub fn new(
+        tag: String,
+        raw: Value,
+        connections: rsb_core::SharedConnectionManager,
+    ) -> Result<Self> {
         let listen = raw
             .get("listen")
             .and_then(|v| v.as_str())
@@ -92,9 +96,10 @@ impl Hysteria2Inbound {
             .map(str::to_string);
         let listen_addr: SocketAddr = format!("{listen}:{port}").parse()?;
         Ok(Self {
-            tag,
+            tag: tag.clone(),
             config: server::Hy2ServerConfig {
                 listen: listen_addr,
+                inbound_tag: tag,
                 cert_path: cert,
                 key_path: key,
                 passwords: users.into_iter().map(|u| u.password).collect(),
@@ -102,6 +107,7 @@ impl Hysteria2Inbound {
                 down_mbps,
                 udp: raw.get("udp").and_then(|v| v.as_bool()).unwrap_or(true),
                 obfs_password,
+                connections,
             },
             handle: Mutex::new(None),
         })

@@ -2,6 +2,7 @@ use anyhow::{Context, Result};
 use async_trait::async_trait;
 use rsb_core::{
     tcp_stream, BoxError, Inbound, Network, Outbound, ProxyConn, ProxyUdpIo, ProxyUdpSocket,
+    SharedOutboundManager,
 };
 use serde_json::Value;
 use shadowsocks::config::ServerConfig;
@@ -33,13 +34,17 @@ fn ss_server_context() -> SharedContext {
 pub struct ShadowsocksOutbound {
     tag: String,
     server_config: Arc<ServerConfig>,
+    detour: Option<String>,
+    shared: Arc<SharedOutboundManager>,
 }
 
 impl ShadowsocksOutbound {
-    pub fn new(tag: String, raw: Value) -> Result<Self> {
+    pub fn new(tag: String, raw: Value, shared: Arc<SharedOutboundManager>) -> Result<Self> {
         Ok(Self {
             tag,
             server_config: Arc::new(parse_server_config(&raw)?),
+            detour: crate::detour::detour_tag(&raw),
+            shared,
         })
     }
 }
@@ -68,11 +73,34 @@ fn parse_server_config(raw: &Value) -> Result<ServerConfig> {
     )?)
 }
 
+fn parse_inbound_server_config(raw: &Value) -> Result<ServerConfig> {
+    let port = raw
+        .get("listen_port")
+        .and_then(|v| v.as_u64())
+        .context("shadowsocks inbound: listen_port required")? as u16;
+    let password = raw
+        .get("password")
+        .and_then(|v| v.as_str())
+        .context("shadowsocks inbound: password required")?;
+    let method = raw
+        .get("method")
+        .and_then(|v| v.as_str())
+        .unwrap_or("aes-256-gcm");
+    Ok(ServerConfig::new(
+        ("0.0.0.0", port),
+        password,
+        parse_cipher(method)?,
+    )?)
+}
+
 fn parse_cipher(method: &str) -> Result<CipherKind> {
     match method.to_lowercase().as_str() {
         "aes-128-gcm" => Ok(CipherKind::AES_128_GCM),
         "aes-256-gcm" => Ok(CipherKind::AES_256_GCM),
         "chacha20-ietf-poly1305" | "chacha20-poly1305" => Ok(CipherKind::CHACHA20_POLY1305),
+        "2022-blake3-aes-128-gcm" => Ok(CipherKind::AEAD2022_BLAKE3_AES_128_GCM),
+        "2022-blake3-aes-256-gcm" => Ok(CipherKind::AEAD2022_BLAKE3_AES_256_GCM),
+        "2022-blake3-chacha20-poly1305" => Ok(CipherKind::AEAD2022_BLAKE3_CHACHA20_POLY1305),
         other => anyhow::bail!("unsupported shadowsocks method: {other}"),
     }
 }
@@ -93,6 +121,27 @@ impl Outbound for ShadowsocksOutbound {
         destination: SocketAddr,
         _domain: Option<&str>,
     ) -> Result<ProxyConn, BoxError> {
+        if let Some(ref detour) = self.detour {
+            let server = self.server_config.addr();
+            let host = server.host();
+            let server_addr = crate::detour::resolve_server_addr(&host, server.port())
+                .await
+                .map_err(Into::<BoxError>::into)?;
+            let tunnel = crate::detour::dial_tcp_via_detour(
+                &self.shared,
+                detour,
+                server_addr,
+                None,
+            )
+            .await?;
+            let stream = ProxyClientStream::from_stream(
+                ss_client_context(),
+                tunnel,
+                &self.server_config,
+                Address::from(destination),
+            );
+            return Ok(tcp_stream(stream));
+        }
         let stream = ProxyClientStream::connect(
             ss_client_context(),
             &self.server_config,
@@ -163,17 +212,23 @@ pub struct ShadowsocksInbound {
     tag: String,
     listen: SocketAddr,
     server_config: Arc<ServerConfig>,
+    connections: rsb_core::SharedConnectionManager,
     shutdown: tokio::sync::watch::Sender<bool>,
     handle: tokio::sync::Mutex<Option<tokio::task::JoinHandle<()>>>,
 }
 
 impl ShadowsocksInbound {
-    pub fn new(tag: String, raw: Value) -> Result<Self> {
+    pub fn new(
+        tag: String,
+        raw: Value,
+        connections: rsb_core::SharedConnectionManager,
+    ) -> Result<Self> {
         let (shutdown, _) = tokio::sync::watch::channel(false);
         Ok(Self {
             tag,
             listen: crate::direct::parse_listen(&raw)?,
-            server_config: Arc::new(parse_server_config(&raw)?),
+            server_config: Arc::new(parse_inbound_server_config(&raw)?),
+            connections,
             shutdown,
             handle: tokio::sync::Mutex::new(None),
         })
@@ -192,6 +247,8 @@ impl Inbound for ShadowsocksInbound {
         let listener = TcpListener::bind(self.listen).await?;
         tracing::info!(tag = %self.tag, %self.listen, "shadowsocks inbound listening");
         let cfg = self.server_config.clone();
+        let connections = self.connections.clone();
+        let inbound_tag = self.tag.clone();
         let mut shutdown = self.shutdown.subscribe();
         let handle = tokio::spawn(async move {
             loop {
@@ -202,9 +259,13 @@ impl Inbound for ShadowsocksInbound {
                     accept = listener.accept() => {
                         let Ok((stream, _)) = accept else { break };
                         let cfg = cfg.clone();
+                        let connections = connections.clone();
+                        let inbound_tag = inbound_tag.clone();
                         tokio::spawn(async move {
                             let mut stream = stream;
-                            if let Err(err) = serve_ss_client(stream, cfg).await {
+                            if let Err(err) =
+                                serve_ss_client(stream, cfg, connections, inbound_tag).await
+                            {
                                 tracing::debug!(error = %err, "ss client failed");
                             }
                         });
@@ -224,7 +285,12 @@ impl Inbound for ShadowsocksInbound {
     }
 }
 
-async fn serve_ss_client(mut stream: TcpStream, server_config: Arc<ServerConfig>) -> Result<()> {
+async fn serve_ss_client(
+    stream: TcpStream,
+    server_config: Arc<ServerConfig>,
+    connections: rsb_core::SharedConnectionManager,
+    inbound_tag: String,
+) -> Result<()> {
     let mut ss = ProxyServerStream::from_stream(
         ss_server_context(),
         stream,
@@ -232,15 +298,22 @@ async fn serve_ss_client(mut stream: TcpStream, server_config: Arc<ServerConfig>
         server_config.key(),
     );
     let target = ss.handshake().await?;
-    let mut remote = match target {
-        Address::SocketAddress(addr) => TcpStream::connect(addr).await?,
-        Address::DomainNameAddress(domain, port) => {
-            let addr = tokio::net::lookup_host(format!("{domain}:{port}"))
+    let (dest_addr, domain) = match &target {
+        shadowsocks::relay::Address::SocketAddress(addr) => (*addr, None),
+        shadowsocks::relay::Address::DomainNameAddress(host, port) => {
+            let addr = tokio::net::lookup_host(format!("{host}:{port}"))
                 .await?
                 .next()
                 .context("resolve ss target")?;
-            TcpStream::connect(addr).await?
-        },
+            (addr, Some(host.clone()))
+        }
     };
-    crate::inbound_proxy::relay_streams(&mut ss, &mut remote).await
+    let mut remote = TcpStream::connect(dest_addr).await?;
+    if let Some(session) =
+        crate::user_relay::begin_for_inbound(&connections, &inbound_tag, Some(dest_addr), domain)?
+    {
+        crate::inbound_proxy::relay_streams_user(&session, &mut ss, &mut remote).await
+    } else {
+        crate::inbound_proxy::relay_streams(&mut ss, &mut remote).await
+    }
 }

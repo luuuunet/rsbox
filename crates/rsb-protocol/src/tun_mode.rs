@@ -150,6 +150,7 @@ async fn handle_tun_tcp(
         process_path: process.path,
         inbound_tag: inbound_tag.clone(),
         inbound_type: rsb_constant::TYPE_TUN.to_string(),
+        user: None,
     };
     let remote = dialer.dial_tcp(&metadata, resolved).await?;
     let local = crate::sniff::PrefixedStream::new(tcp, prefix);
@@ -194,6 +195,7 @@ async fn handle_tun_udp(
         process_path: None,
         inbound_tag: inbound_tag.clone(),
         inbound_type: rsb_constant::TYPE_TUN.to_string(),
+        user: None,
     };
     let remote = dialer.dial_udp(&metadata, resolved).await?;
     let dest = resolved;

@@ -4,10 +4,11 @@ mod hello;
 mod tls13;
 
 pub use hello::{
-    build_client_hello, client_hello_random, generate_client_hello, hello_layout, ClientHelloKeys,
-    HelloLayout, Profile,
+    build_client_hello, client_hello_random, generate_client_hello,
+    generate_shadowtls_client_hello, hello_layout, parse_client_hello_key_share,
+    pick_client_tls13_cipher, ClientHelloKeys, HelloLayout, Profile,
 };
-pub use tls13::{TlsIo, UtlsTlsStream};
+pub use tls13::{complete_tls13_camouflage, server, TlsIo, UtlsTlsStream};
 
 use anyhow::{Context, Result};
 use rustls::ClientConfig;

@@ -379,13 +379,29 @@ impl Inbound for MixedInbound {
                         let dns = dns.clone();
                         let tag = tag.clone();
                         let kind = kind.clone();
+
                         tokio::spawn(async move {
                             let mut stream = stream;
-                            if let Err(err) = handle_client(&mut stream, peer, &tag, &kind, mode, dialer, dns).await {
-                                tracing::debug!(error = %err, "proxy client failed");
+
+                            let result = tokio::time::timeout(
+                                tokio::time::Duration::from_secs(300),
+                                handle_client(&mut stream, peer, &tag, &kind, mode, dialer, dns),
+                            )
+                            .await;
+
+                            match result {
+                                Ok(Ok(())) => {
+                                    tracing::trace!("Connection completed successfully");
+                                }
+                                Ok(Err(err)) => {
+                                    tracing::debug!(error = ?err, "proxy client failed");
+                                }
+                                Err(_) => {
+                                    tracing::debug!("Connection timeout after 5 minutes");
+                                }
                             }
-                            // ✅ 修复连接泄漏：确保连接被关闭
-                            let _ = stream.shutdown().await;
+
+                            close_inbound_stream(&mut stream).await;
                         });
                     }
                 }
@@ -636,14 +652,11 @@ async fn dial_and_relay(
     dest: SocketAddr,
     mut domain: Option<String>,
 ) -> Result<()> {
-    use std::time::Duration;
-    use tokio::io::{AsyncReadExt, AsyncWriteExt};
-
     let process = rsb_core::lookup_process_for_tcp_stream(client);
     let dest = resolve_destination(&dns, dest, domain.as_deref()).await?;
 
-    tracing::info!(
-        "🔍 dial_and_relay: connecting to {:?}, domain: {:?}",
+    tracing::debug!(
+        "dial_and_relay: connecting to {:?}, domain: {:?}",
         dest,
         domain
     );
@@ -658,9 +671,14 @@ async fn dial_and_relay(
         process_path: process.path,
         inbound_tag: inbound_tag.to_string(),
         inbound_type: inbound_type.to_string(),
+        user: None,
     };
 
-    let mut remote = dialer.dial_tcp(&metadata, dest).await?;
+    let Some(mut remote) =
+        dial_tcp_with_client_watch(client, dialer, metadata, dest).await?
+    else {
+        return Ok(());
+    };
     relay_proxy(client, remote).await
 }
 
@@ -677,20 +695,13 @@ async fn dial_and_relay_with_initial_data(
     domain: Option<String>,
 ) -> Result<()> {
     use std::time::Duration;
-    use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
-    tracing::info!(
-        "🔍 dial_and_relay_with_initial_data: initial_data.len() = {}",
+    tracing::debug!(
+        "dial_and_relay_with_initial_data: initial_data.len() = {}",
         initial_data.len()
     );
-    tracing::info!(
-        "🔍 initial_data (first 64 bytes): {:02x?}",
-        &initial_data[..initial_data.len().min(64)]
-    );
 
-    // 不嗅探，直接解析和连接
     let dest = resolve_destination(&dns, dest, domain.as_deref()).await?;
-    tracing::info!("🔍 resolved destination: {:?}, domain: {:?}", dest, domain);
 
     let metadata = Metadata {
         network: Network::Tcp,
@@ -702,25 +713,17 @@ async fn dial_and_relay_with_initial_data(
         process_path: None,
         inbound_tag: inbound_tag.to_string(),
         inbound_type: inbound_type.to_string(),
+        user: None,
     };
 
-    let mut remote = dialer.dial_tcp(&metadata, dest).await?;
-    tracing::info!("🔍 connected to remote server successfully");
+    let Some(mut remote) =
+        dial_tcp_with_client_watch(client, dialer, metadata, dest).await?
+    else {
+        return Ok(());
+    };
 
-    // 先发送初始数据到远程服务器
-    tracing::info!("🔍 sending {} bytes of initial data...", initial_data.len());
-    remote
-        .as_mut()
-        .write_all(&initial_data)
-        .await
-        .map_err(|e| {
-            tracing::error!("❌ failed to write initial data: {}", e);
-            e
-        })?;
-    tracing::info!("✅ initial data sent successfully");
+    remote.as_mut().write_all(&initial_data).await?;
 
-    // 读取远程服务器的第一批响应数据
-    tracing::info!("🔍 waiting for first response from remote...");
     let mut first_chunk = vec![0u8; 1024];
     match tokio::time::timeout(
         Duration::from_secs(2),
@@ -730,35 +733,19 @@ async fn dial_and_relay_with_initial_data(
     {
         Ok(Ok(n)) => {
             if n > 0 {
-                tracing::info!("🔍 received {} bytes from remote server", n);
-                tracing::info!(
-                    "🔍 response (first 256 bytes hex): {:02x?}",
-                    &first_chunk[..n.min(256)]
-                );
-                tracing::info!(
-                    "🔍 response (as string): {}",
-                    String::from_utf8_lossy(&first_chunk[..n.min(256)])
-                );
-
-                // 将读取的数据写回客户端
                 client.write_all(&first_chunk[..n]).await?;
-                tracing::info!("✅ first chunk relayed to client");
             } else {
-                tracing::warn!("⚠️ remote server closed connection immediately");
+                tracing::debug!("remote closed before relay");
+                let _ = remote.as_mut().shutdown().await;
                 return Ok(());
             }
-        },
-        Ok(Err(e)) => {
-            tracing::error!("❌ error reading from remote: {}", e);
-            return Err(e.into());
-        },
+        }
+        Ok(Err(e)) => return Err(e.into()),
         Err(_) => {
-            tracing::warn!("⚠️ timeout waiting for remote response");
-        },
+            tracing::debug!("timeout waiting for first remote response");
+        }
     }
 
-    // 然后正常双向转发
-    tracing::info!("🔍 starting bidirectional relay");
     relay_proxy(client, remote).await
 }
 
@@ -781,15 +768,11 @@ pub async fn resolve_destination(
     placeholder: SocketAddr,
     domain: Option<&str>,
 ) -> Result<SocketAddr> {
-    let Some(_host) = domain else {
+    let Some(host) = domain else {
         return Ok(placeholder);
     };
-    // Hy2/VLESS 等 outbound 会直接用域名建连；跳过同步 DNS 可显著降低首包延迟。
-    if placeholder.ip().is_unspecified() {
-        return Ok(placeholder);
-    }
     let port = placeholder.port();
-    let addrs = dns.lookup(_host).await?;
+    let addrs = dns.lookup(host).await?;
     let ip = addrs
         .into_iter()
         .next()
@@ -808,23 +791,303 @@ pub async fn relay_streams(
     a: &mut (impl tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin),
     b: &mut (impl tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin),
 ) -> Result<()> {
-    tokio::io::copy_bidirectional(a, b).await?;
+    let copy = tokio::io::copy_bidirectional(a, b).await;
+    shutdown_io(a, b).await;
+    copy?;
+    Ok(())
+}
 
-    // ✅ 修复连接泄漏：显式关闭双向连接
-    let _ = tokio::io::AsyncWriteExt::shutdown(a).await;
-    let _ = tokio::io::AsyncWriteExt::shutdown(b).await;
+/// Panel-aware relay: per-user traffic stats, quota, connection limits, and bandwidth cap.
+pub struct UserRelaySession {
+    pub(crate) inner: std::sync::Arc<UserRelayInner>,
+    conn_id: u64,
+    _user_guard: rsb_core::UserSessionGuard,
+}
 
+struct UserRelayInner {
+    connections: rsb_core::SharedConnectionManager,
+    inbound_tag: String,
+    outbound_tag: String,
+    user_name: String,
+    limits: rsb_core::UserLimits,
+    limiter: Option<std::sync::Arc<rsb_core::rate_limit::RateLimiter>>,
+}
+
+impl UserRelaySession {
+    pub fn begin(
+        connections: rsb_core::SharedConnectionManager,
+        inbound_tag: &str,
+        user_name: &str,
+        limits: rsb_core::UserLimits,
+        destination: Option<std::net::SocketAddr>,
+        domain: Option<String>,
+    ) -> Result<Self> {
+        let guard = connections.acquire_user(user_name, &limits)?;
+        let limiter = connections.user_limiter(user_name, limits.speed_bps);
+        let conn_id = connections.track(
+            inbound_tag,
+            "direct",
+            "tcp",
+            None,
+            destination,
+            domain,
+            Some(user_name.to_string()),
+        );
+        Ok(Self {
+            inner: std::sync::Arc::new(UserRelayInner {
+                connections,
+                inbound_tag: inbound_tag.to_string(),
+                outbound_tag: "direct".into(),
+                user_name: user_name.to_string(),
+                limits,
+                limiter,
+            }),
+            conn_id,
+            _user_guard: guard,
+        })
+    }
+}
+
+impl Drop for UserRelaySession {
+    fn drop(&mut self) {
+        self.inner.connections.untrack(self.conn_id);
+    }
+}
+
+pub async fn relay_streams_user(
+    session: &UserRelaySession,
+    client: &mut (impl tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin),
+    remote: &mut (impl tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin),
+) -> Result<()> {
+    let session = session.inner.clone();
+    let (mut client_r, mut client_w) = tokio::io::split(client);
+    let (mut remote_r, mut remote_w) = tokio::io::split(remote);
+    let s_up = session.clone();
+    let s_down = session;
+    let up = relay_user_half(&mut client_r, &mut remote_w, &s_up, true);
+    let down = relay_user_half(&mut remote_r, &mut client_w, &s_down, false);
+    tokio::pin!(up);
+    tokio::pin!(down);
+    tokio::select! {
+        r = &mut up => { r?; down.await?; }
+        r = &mut down => { r?; up.await?; }
+    }
+    Ok(())
+}
+
+/// Relay between an AnyTLS multiplexed stream and a plain TCP socket with user limits.
+pub async fn relay_anytls_stream_user(
+    session: &UserRelaySession,
+    stream: std::sync::Arc<anytls_rs::session::Stream>,
+    outbound: tokio::net::TcpStream,
+) -> Result<()> {
+    let inner = session.inner.clone();
+    let stream_id = stream.id();
+    let (mut outbound_read, mut outbound_write) = tokio::io::split(outbound);
+
+    let stream_for_read = std::sync::Arc::clone(&stream);
+    let inner_up = inner.clone();
+    let up = async move {
+        let reader_mutex = stream_for_read.reader();
+        let mut buf = vec![0u8; 16 * 1024];
+        loop {
+            let n = {
+                let mut reader = reader_mutex.lock().await;
+                reader.read(&mut buf).await?
+            };
+            if n == 0 {
+                break;
+            }
+            if !inner_up
+                .connections
+                .user_quota_ok(&inner_up.user_name, &inner_up.limits)
+            {
+                break;
+            }
+            if let Some(ref lim) = inner_up.limiter {
+                lim.throttle(n as u64).await;
+            }
+            outbound_write.write_all(&buf[..n]).await?;
+            inner_up.connections.record_traffic(
+                &inner_up.inbound_tag,
+                &inner_up.outbound_tag,
+                n as u64,
+                0,
+                Some(&inner_up.user_name),
+            );
+        }
+        Ok::<(), anyhow::Error>(())
+    };
+
+    let stream_for_write = std::sync::Arc::clone(&stream);
+    let inner_down = inner;
+    let down = async move {
+        let mut buf = vec![0u8; 16 * 1024];
+        loop {
+            let n = outbound_read.read(&mut buf).await?;
+            if n == 0 {
+                break;
+            }
+            if !inner_down
+                .connections
+                .user_quota_ok(&inner_down.user_name, &inner_down.limits)
+            {
+                break;
+            }
+            if let Some(ref lim) = inner_down.limiter {
+                lim.throttle(n as u64).await;
+            }
+            use bytes::Bytes;
+            stream_for_write
+                .send_data(Bytes::copy_from_slice(&buf[..n]))
+                .map_err(|e| anyhow::anyhow!("anytls stream {stream_id} write: {e:?}"))?;
+            inner_down.connections.record_traffic(
+                &inner_down.inbound_tag,
+                &inner_down.outbound_tag,
+                0,
+                n as u64,
+                Some(&inner_down.user_name),
+            );
+        }
+        Ok::<(), anyhow::Error>(())
+    };
+
+    tokio::pin!(up);
+    tokio::pin!(down);
+    tokio::select! {
+        r = &mut up => { r?; let _ = down.await; }
+        r = &mut down => { r?; let _ = up.await; }
+    }
+    Ok(())
+}
+
+pub(crate) async fn relay_user_half<R, W>(
+    reader: &mut R,
+    writer: &mut W,
+    session: &std::sync::Arc<UserRelayInner>,
+    uplink: bool,
+) -> Result<()>
+where
+    R: tokio::io::AsyncRead + Unpin,
+    W: tokio::io::AsyncWrite + Unpin,
+{
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    let mut buf = vec![0u8; 16 * 1024];
+    loop {
+        let n = reader.read(&mut buf).await?;
+        if n == 0 {
+            break;
+        }
+        if !session
+            .connections
+            .user_quota_ok(&session.user_name, &session.limits)
+        {
+            tracing::info!(user = %session.user_name, "user traffic quota exceeded");
+            break;
+        }
+        if let Some(ref lim) = session.limiter {
+            lim.throttle(n as u64).await;
+        }
+        writer.write_all(&buf[..n]).await?;
+        if uplink {
+            session.connections.record_traffic(
+                &session.inbound_tag,
+                &session.outbound_tag,
+                n as u64,
+                0,
+                Some(&session.user_name),
+            );
+        } else {
+            session.connections.record_traffic(
+                &session.inbound_tag,
+                &session.outbound_tag,
+                0,
+                n as u64,
+                Some(&session.user_name),
+            );
+        }
+    }
     Ok(())
 }
 
 pub async fn relay_proxy(a: &mut TcpStream, mut b: ProxyConn) -> Result<()> {
-    tokio::io::copy_bidirectional(a, b.as_mut()).await?;
-
-    // ✅ 修复连接泄漏：显式关闭双向连接
-    let _ = a.shutdown().await;
-    let _ = tokio::io::AsyncWriteExt::shutdown(b.as_mut()).await;
-
+    let copy = tokio::io::copy_bidirectional(a, b.as_mut()).await;
+    close_inbound_stream(a).await;
+    let _ = b.as_mut().shutdown().await;
+    drop(b);
+    copy?;
     Ok(())
+}
+
+/// Fully close an inbound client socket (avoids CLOSE_WAIT accumulation on Windows).
+async fn close_inbound_stream(stream: &mut TcpStream) {
+    let _ = stream.shutdown().await;
+    let mut discard = [0u8; 4096];
+    loop {
+        match stream.read(&mut discard).await {
+            Ok(0) | Err(_) => break,
+            Ok(_) => continue,
+        }
+    }
+}
+
+async fn shutdown_io(
+    a: &mut (impl tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin),
+    b: &mut (impl tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin),
+) {
+    let _ = tokio::io::AsyncWriteExt::shutdown(a).await;
+    let _ = tokio::io::AsyncWriteExt::shutdown(b).await;
+}
+
+async fn client_is_closed(stream: &mut TcpStream) -> bool {
+    let mut buf = [0u8; 1];
+    match stream.peek(&mut buf).await {
+        Ok(0) => true,
+        Err(e) => matches!(
+            e.kind(),
+            std::io::ErrorKind::ConnectionReset
+                | std::io::ErrorKind::BrokenPipe
+                | std::io::ErrorKind::UnexpectedEof
+        ),
+        Ok(_) => false,
+    }
+}
+
+/// Dial outbound while watching the inbound client; abort if the client disconnects first.
+async fn dial_tcp_with_client_watch(
+    client: &mut TcpStream,
+    dialer: Arc<Dialer>,
+    metadata: Metadata,
+    dest: SocketAddr,
+) -> Result<Option<ProxyConn>> {
+    use std::time::Duration;
+
+    let dial = tokio::time::timeout(
+        Duration::from_secs(45),
+        dialer.dial_tcp(&metadata, dest),
+    );
+    tokio::pin!(dial);
+
+    let mut tick = tokio::time::interval(Duration::from_millis(200));
+    tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+
+    loop {
+        tokio::select! {
+            result = &mut dial => {
+                return match result {
+                    Ok(Ok(conn)) => Ok(Some(conn)),
+                    Ok(Err(e)) => Err(e),
+                    Err(_) => anyhow::bail!("outbound dial timeout after 45s"),
+                };
+            }
+            _ = tick.tick() => {
+                if client_is_closed(client).await {
+                    tracing::debug!("inbound client closed during outbound dial");
+                    return Ok(None);
+                }
+            }
+        }
+    }
 }
 
 pub async fn handle_redirect_stream(
@@ -882,6 +1145,7 @@ async fn handle_http_proxy(
         process_path: None,
         inbound_tag: inbound_tag.to_string(),
         inbound_type: inbound_type.to_string(),
+        user: None,
     };
 
     // 连接到目标服务器

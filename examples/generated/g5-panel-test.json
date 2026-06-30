@@ -1,0 +1,39 @@
+{
+  "log": {
+    "level": "info"
+  },
+  "inbounds": [
+    {
+      "type": "shadowsocks",
+      "tag": "ss-g5",
+      "listen": "127.0.0.1",
+      "listen_port": 18443,
+      "method": "chacha20-ietf-poly1305",
+      "name": "g5user@test.com",
+      "password": "g5-test-password",
+      "users": [
+        {
+          "name": "g5user@test.com",
+          "password": "g5-test-password",
+          "conn_limit": 2,
+          "speed_mbps": 100,
+          "traffic_limit_gb": 10
+        }
+      ]
+    }
+  ],
+  "outbounds": [
+    {
+      "type": "direct",
+      "tag": "direct"
+    }
+  ],
+  "route": {
+    "final": "direct"
+  },
+  "experimental": {
+    "v2ray_api": {
+      "listen": "127.0.0.1:10085"
+    }
+  }
+}
