@@ -87,7 +87,7 @@ jobs:
         run: cross build --release -p rsbox --target ${{ matrix.target }} --features rsb-protocol/ssh-vendored
 
       - name: Strip binary (Unix)
-        if: runner.os != 'Windows'
+        if: runner.os != 'Windows' && !matrix.use_cross
         run: strip "target/${{ matrix.target }}/release/${{ matrix.artifact_name }}"
 
       - name: Prepare release asset
