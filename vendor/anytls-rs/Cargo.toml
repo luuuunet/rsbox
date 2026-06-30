@@ -23,7 +23,6 @@ autobenches = false
 description = "Async TLS proxy with SOCKS5 support for privacy and security."
 homepage = "https://github.com/jxo-me/anytls-rs"
 documentation = "https://docs.rs/anytls-rs"
-readme = "README.md"
 keywords = [
     "anytls",
     "tls",
