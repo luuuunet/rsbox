@@ -58,7 +58,7 @@ jobs:
             use_cross: false
 
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v6
 
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
@@ -70,7 +70,7 @@ jobs:
         run: cargo install cross --locked
 
       - name: Cache cargo
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: |
             ~/.cargo/registry
@@ -98,7 +98,7 @@ jobs:
           cp "target/${{ matrix.target }}/release/${{ matrix.artifact_name }}" "dist/${{ matrix.asset_name }}"
 
       - name: Upload build artifact
-        uses: actions/upload-artifact@v5
+        uses: actions/upload-artifact@v6
         with:
           name: ${{ matrix.asset_name }}
           path: dist/${{ matrix.asset_name }}
@@ -119,7 +119,7 @@ jobs:
             arch: x86_64
 
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v6
 
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
@@ -150,7 +150,7 @@ jobs:
           echo "AR_x86_64_linux_android=$NDK/llvm-ar" >> $GITHUB_ENV
 
       - name: Cache cargo
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: |
             ~/.cargo/registry
@@ -168,7 +168,7 @@ jobs:
           cp "target/${{ matrix.target }}/release/librsb_libbox.so" "dist/librsb_libbox-android-${{ matrix.arch }}.so"
 
       - name: Upload artifact
-        uses: actions/upload-artifact@v5
+        uses: actions/upload-artifact@v6
         with:
           name: rsb-libbox-android-${{ matrix.arch }}
           path: dist/librsb_libbox-android-${{ matrix.arch }}.so
@@ -189,7 +189,7 @@ jobs:
             name: simulator-arm64
 
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v6
 
       - name: Setup Rust
         uses: dtolnay/rust-toolchain@stable
@@ -197,7 +197,7 @@ jobs:
           targets: ${{ matrix.target }}
 
       - name: Cache cargo
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: |
             ~/.cargo/registry
@@ -215,7 +215,7 @@ jobs:
           cp "target/${{ matrix.target }}/release/librsb_libbox.a" "dist/librsb_libbox-ios-${{ matrix.name }}.a"
 
       - name: Upload artifact
-        uses: actions/upload-artifact@v5
+        uses: actions/upload-artifact@v6
         with:
           name: rsb-libbox-ios-${{ matrix.name }}
           path: dist/librsb_libbox-ios-${{ matrix.name }}.a
@@ -225,9 +225,9 @@ jobs:
     name: Mobile headers
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v5
+      - uses: actions/checkout@v6
       - name: Upload rsbox.h
-        uses: actions/upload-artifact@v5
+        uses: actions/upload-artifact@v6
         with:
           name: rsbox-mobile-headers
           path: crates/rsb-libbox/include/rsbox.h
@@ -238,7 +238,7 @@ jobs:
     needs: [build-desktop, build-android, build-ios, build-mobile-headers]
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/download-artifact@v5
+      - uses: actions/download-artifact@v7
         with:
           path: dist
           merge-multiple: true
@@ -261,7 +261,7 @@ jobs:
         run: find dist -type f ! -path 'dist/bundle/*' ! -path 'dist/bundle-ios/*' -exec ls -lh {} \;
 
       - name: Create GitHub Release
-        uses: softprops/action-gh-release@v2
+        uses: softprops/action-gh-release@v3
         with:
           tag_name: ${{ github.event_name == 'workflow_dispatch' && inputs.version || github.ref_name }}
           generate_release_notes: true
