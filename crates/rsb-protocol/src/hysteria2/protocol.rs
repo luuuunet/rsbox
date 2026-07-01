@@ -101,6 +101,29 @@ pub fn encode_tcp_response(ok: bool, message: &str, padding_len: usize) -> Bytes
     buf
 }
 
+/// Try to decode a TCP response; returns `None` if more bytes are needed.
+pub fn try_decode_tcp_response(buf: &mut bytes::BytesMut) -> Result<Option<(bool, String)>> {
+    if buf.is_empty() {
+        return Ok(None);
+    }
+    let mut slice: &[u8] = buf;
+    match decode_tcp_response(&mut slice) {
+        Ok(result) => {
+            let consumed = buf.len() - slice.len();
+            buf.advance(consumed);
+            Ok(Some(result))
+        }
+        Err(err) => {
+            let msg = err.to_string();
+            if msg.contains("truncated") {
+                Ok(None)
+            } else {
+                Err(err)
+            }
+        }
+    }
+}
+
 pub fn decode_tcp_response(buf: &mut impl Buf) -> Result<(bool, String)> {
     if buf.remaining() < 1 {
         bail!("truncated tcp response");

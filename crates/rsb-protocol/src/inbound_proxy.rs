@@ -9,6 +9,11 @@ use std::sync::Arc;
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::net::{TcpListener, TcpStream};
 
+const MAX_CONCURRENT_INBOUND: usize = 256;
+const INBOUND_HANDLER_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(120);
+const INBOUND_ACQUIRE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+const INBOUND_DRAIN_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(2);
+
 // ✅ 异步清理模块（内联）
 mod async_cleanup {
     use std::sync::Arc;
@@ -201,27 +206,8 @@ impl Inbound for MixedInbound {
 
         let socket = Socket::new(Domain::IPV4, Type::STREAM, Some(Protocol::TCP))?;
 
-        // ✅ 应用 TCP Fast Open
+        // TCP Fast Open: enabled on Linux/macOS only (skip Windows — bad with system proxy).
         if self.tcp_fast_open {
-            #[cfg(target_os = "windows")]
-            {
-                use std::os::windows::io::AsRawSocket;
-                // Windows: TCP_FASTOPEN = 15
-                const TCP_FASTOPEN: i32 = 15;
-                let value: u32 = 1;
-                unsafe {
-                    let ret = windows_sys::Win32::Networking::WinSock::setsockopt(
-                        socket.as_raw_socket() as usize,
-                        windows_sys::Win32::Networking::WinSock::IPPROTO_TCP as i32,
-                        TCP_FASTOPEN,
-                        &value as *const _ as *const u8,
-                        std::mem::size_of::<u32>() as i32,
-                    );
-                    if ret != 0 {
-                        tracing::warn!("Failed to set TCP_FASTOPEN on Windows");
-                    }
-                }
-            }
             #[cfg(target_os = "linux")]
             {
                 use std::os::unix::io::AsRawFd;
@@ -366,6 +352,7 @@ impl Inbound for MixedInbound {
         let mode = self.mode;
         let sniff = self.sniff;
         let sniff_override = self.sniff_override_destination;
+        let concurrency = Arc::new(tokio::sync::Semaphore::new(MAX_CONCURRENT_INBOUND));
         let mut shutdown = self.shutdown.subscribe();
         let handle = tokio::spawn(async move {
             loop {
@@ -374,18 +361,49 @@ impl Inbound for MixedInbound {
                         if *shutdown.borrow() { break; }
                     }
                     accept = listener.accept() => {
-                        let Ok((stream, peer)) = accept else { break };
+                        let Ok((mut stream, peer)) = accept else { break };
                         let dialer = dialer.clone();
                         let dns = dns.clone();
                         let tag = tag.clone();
                         let kind = kind.clone();
+                        let concurrency = concurrency.clone();
 
                         tokio::spawn(async move {
-                            let mut stream = stream;
+                            let Ok(permit) = tokio::time::timeout(
+                                INBOUND_ACQUIRE_TIMEOUT,
+                                concurrency.acquire_owned(),
+                            )
+                            .await
+                            else {
+                                let mut stream = stream;
+                                let _ = send_http_error(
+                                    &mut stream,
+                                    503,
+                                    "Service Unavailable",
+                                    "proxy concurrency saturated",
+                                )
+                                .await;
+                                close_inbound_stream(&mut stream).await;
+                                return;
+                            };
+                            let Ok(permit) = permit else {
+                                close_inbound_stream(&mut stream).await;
+                                return;
+                            };
+                            let mut handshake_permit = Some(permit);
 
                             let result = tokio::time::timeout(
-                                tokio::time::Duration::from_secs(300),
-                                handle_client(&mut stream, peer, &tag, &kind, mode, dialer, dns),
+                                INBOUND_HANDLER_TIMEOUT,
+                                handle_client(
+                                    &mut stream,
+                                    peer,
+                                    &tag,
+                                    &kind,
+                                    mode,
+                                    dialer,
+                                    dns,
+                                    &mut handshake_permit,
+                                ),
                             )
                             .await;
 
@@ -397,7 +415,7 @@ impl Inbound for MixedInbound {
                                     tracing::debug!(error = ?err, "proxy client failed");
                                 }
                                 Err(_) => {
-                                    tracing::debug!("Connection timeout after 5 minutes");
+                                    tracing::debug!("Connection timeout after handler limit");
                                 }
                             }
 
@@ -427,27 +445,80 @@ async fn handle_client(
     mode: ProxyMode,
     dialer: Arc<Dialer>,
     dns: Arc<DnsRouter>,
+    handshake_permit: &mut Option<tokio::sync::OwnedSemaphorePermit>,
 ) -> Result<()> {
     let mut peek = [0u8; 1];
-    let n = stream.peek(&mut peek).await?;
+    let n = match tokio::time::timeout(
+        std::time::Duration::from_secs(5),
+        stream.peek(&mut peek),
+    )
+    .await
+    {
+        Ok(Ok(n)) => n,
+        Ok(Err(e)) => return Err(e.into()),
+        Err(_) => {
+            tracing::debug!("inbound peek timeout, closing idle client");
+            return Ok(());
+        }
+    };
     if n == 0 {
         return Ok(());
     }
     match mode {
         ProxyMode::Http => {
-            handle_http_connect(stream, peer, inbound_tag, inbound_type, dialer, dns).await
+            handle_http_connect(
+                stream,
+                peer,
+                inbound_tag,
+                inbound_type,
+                dialer,
+                dns,
+                handshake_permit,
+            )
+            .await
         },
         ProxyMode::Socks => {
-            handle_socks5(stream, peer, inbound_tag, inbound_type, dialer, dns).await
+            handle_socks5(
+                stream,
+                peer,
+                inbound_tag,
+                inbound_type,
+                dialer,
+                dns,
+                handshake_permit,
+            )
+            .await
         },
         ProxyMode::Mixed => {
             if peek[0] == 0x05 {
-                handle_socks5(stream, peer, inbound_tag, inbound_type, dialer, dns).await
+                handle_socks5(
+                    stream,
+                    peer,
+                    inbound_tag,
+                    inbound_type,
+                    dialer,
+                    dns,
+                    handshake_permit,
+                )
+                .await
             } else {
-                handle_http_connect(stream, peer, inbound_tag, inbound_type, dialer, dns).await
+                handle_http_connect(
+                    stream,
+                    peer,
+                    inbound_tag,
+                    inbound_type,
+                    dialer,
+                    dns,
+                    handshake_permit,
+                )
+                .await
             }
         },
     }
+}
+
+fn release_handshake_permit(permit: &mut Option<tokio::sync::OwnedSemaphorePermit>) {
+    permit.take();
 }
 
 async fn handle_socks5(
@@ -457,6 +528,7 @@ async fn handle_socks5(
     inbound_type: &str,
     dialer: Arc<Dialer>,
     dns: Arc<DnsRouter>,
+    handshake_permit: &mut Option<tokio::sync::OwnedSemaphorePermit>,
 ) -> Result<()> {
     let mut header = [0u8; 2];
     stream.read_exact(&mut header).await?;
@@ -472,6 +544,7 @@ async fn handle_socks5(
     stream
         .write_all(&[0x05, 0x00, 0x00, 0x01, 0, 0, 0, 0, 0, 0])
         .await?;
+    release_handshake_permit(handshake_permit);
     dial_and_relay(
         stream,
         peer,
@@ -524,6 +597,7 @@ async fn handle_http_connect(
     inbound_type: &str,
     dialer: Arc<Dialer>,
     dns: Arc<DnsRouter>,
+    handshake_permit: &mut Option<tokio::sync::OwnedSemaphorePermit>,
 ) -> Result<()> {
     // ✅ 使用 BufReader 精确读取 HTTP 请求，完全模仿 sing-box
     let mut reader = BufReader::new(stream);
@@ -531,6 +605,7 @@ async fn handle_http_connect(
     // 读取请求行
     let mut request_line = String::new();
     reader.read_line(&mut request_line).await?;
+    let mut full_request = request_line.clone();
 
     let mut parts = request_line.trim().split_whitespace();
     let method = parts.next().context("no method")?;
@@ -543,8 +618,10 @@ async fn handle_http_connect(
         let mut line = String::new();
         reader.read_line(&mut line).await?;
         if line == "\r\n" || line == "\n" || line.is_empty() {
+            full_request.push_str("\r\n");
             break;
         }
+        full_request.push_str(&line);
     }
 
     tracing::info!(
@@ -570,6 +647,7 @@ async fn handle_http_connect(
             .await?;
 
         tracing::info!("✅ Sent 200 Connection Established");
+        release_handshake_permit(handshake_permit);
 
         // ✅ 检查 BufReader 是否有缓冲数据（模仿 sing-box）
         let buffered = reader.buffer().len();
@@ -623,20 +701,33 @@ async fn handle_http_connect(
         || method == "OPTIONS"
         || method == "PATCH"
     {
-        // 普通 HTTP 方法：GET, POST 等
-        // 对于非 CONNECT 请求，回退到原始实现
-        // TODO: 未来可以也用 BufReader 重构这部分
-        tracing::warn!(
-            "⚠️ Non-CONNECT HTTP method {} not fully refactored yet, using fallback",
-            method
-        );
-
-        // 获取底层 stream 并重新读取（简化处理）
         let mut stream = reader.into_inner();
-        anyhow::bail!(
-            "Non-CONNECT HTTP methods not supported in BufReader mode yet: {}",
-            method
+        release_handshake_permit(handshake_permit);
+        if let Err(err) = handle_http_proxy(
+            &mut stream,
+            peer,
+            inbound_tag,
+            inbound_type,
+            dialer,
+            dns,
+            method,
+            target,
+            &full_request,
+            &[],
         )
+        .await
+        {
+            tracing::debug!(error = ?err, "http proxy request failed");
+            let _ = send_http_error(
+                &mut stream,
+                502,
+                "Bad Gateway",
+                "outbound dial failed",
+            )
+            .await;
+            return Err(err);
+        }
+        Ok(())
     } else {
         anyhow::bail!("unsupported HTTP method: {}", method)
     }
@@ -743,6 +834,8 @@ async fn dial_and_relay_with_initial_data(
         Ok(Err(e)) => return Err(e.into()),
         Err(_) => {
             tracing::debug!("timeout waiting for first remote response");
+            let _ = remote.as_mut().shutdown().await;
+            anyhow::bail!("timeout waiting for first remote response");
         }
     }
 
@@ -784,7 +877,11 @@ pub async fn relay_bidirectional(
     a: &mut TcpStream,
     mut b: impl tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
 ) -> Result<()> {
-    relay_streams(a, &mut b).await
+    let copy = tokio::io::copy_bidirectional(a, &mut b).await;
+    close_inbound_stream(a).await;
+    let _ = tokio::io::AsyncWriteExt::shutdown(&mut b).await;
+    copy?;
+    Ok(())
 }
 
 pub async fn relay_streams(
@@ -1011,24 +1108,52 @@ where
 }
 
 pub async fn relay_proxy(a: &mut TcpStream, mut b: ProxyConn) -> Result<()> {
-    let copy = tokio::io::copy_bidirectional(a, b.as_mut()).await;
+    let copy = tokio::time::timeout(
+        std::time::Duration::from_secs(90),
+        tokio::io::copy_bidirectional(a, b.as_mut()),
+    )
+    .await;
     close_inbound_stream(a).await;
     let _ = b.as_mut().shutdown().await;
     drop(b);
-    copy?;
+    match copy {
+        Ok(result) => {
+            result?;
+        }
+        Err(_) => {
+            tracing::debug!("relay timed out after 90s");
+        }
+    }
     Ok(())
 }
 
 /// Fully close an inbound client socket (avoids CLOSE_WAIT accumulation on Windows).
 async fn close_inbound_stream(stream: &mut TcpStream) {
     let _ = stream.shutdown().await;
-    let mut discard = [0u8; 4096];
-    loop {
-        match stream.read(&mut discard).await {
-            Ok(0) | Err(_) => break,
-            Ok(_) => continue,
+    let drain = async {
+        let mut discard = [0u8; 4096];
+        loop {
+            match stream.read(&mut discard).await {
+                Ok(0) | Err(_) => break,
+                Ok(_) => continue,
+            }
         }
-    }
+    };
+    let _ = tokio::time::timeout(INBOUND_DRAIN_TIMEOUT, drain).await;
+}
+
+async fn send_http_error(
+    stream: &mut TcpStream,
+    code: u16,
+    reason: &str,
+    body: &str,
+) -> Result<()> {
+    let response = format!(
+        "HTTP/1.1 {code} {reason}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
+        body.len()
+    );
+    let _ = stream.write_all(response.as_bytes()).await;
+    Ok(())
 }
 
 async fn shutdown_io(
@@ -1040,16 +1165,20 @@ async fn shutdown_io(
 }
 
 async fn client_is_closed(stream: &mut TcpStream) -> bool {
+    use std::time::Duration;
+
+    // Must not consume bytes (CONNECT may send TLS ClientHello while we dial outbound).
     let mut buf = [0u8; 1];
-    match stream.peek(&mut buf).await {
-        Ok(0) => true,
-        Err(e) => matches!(
+    match tokio::time::timeout(Duration::from_millis(50), stream.peek(&mut buf)).await {
+        Ok(Ok(0)) => true,
+        Ok(Ok(_)) => false,
+        Ok(Err(e)) => matches!(
             e.kind(),
             std::io::ErrorKind::ConnectionReset
                 | std::io::ErrorKind::BrokenPipe
                 | std::io::ErrorKind::UnexpectedEof
         ),
-        Ok(_) => false,
+        Err(_) => false,
     }
 }
 
@@ -1063,12 +1192,12 @@ async fn dial_tcp_with_client_watch(
     use std::time::Duration;
 
     let dial = tokio::time::timeout(
-        Duration::from_secs(45),
+        Duration::from_secs(8),
         dialer.dial_tcp(&metadata, dest),
     );
     tokio::pin!(dial);
 
-    let mut tick = tokio::time::interval(Duration::from_millis(200));
+    let mut tick = tokio::time::interval(Duration::from_millis(50));
     tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
     loop {
@@ -1077,7 +1206,7 @@ async fn dial_tcp_with_client_watch(
                 return match result {
                     Ok(Ok(conn)) => Ok(Some(conn)),
                     Ok(Err(e)) => Err(e),
-                    Err(_) => anyhow::bail!("outbound dial timeout after 45s"),
+                    Err(_) => anyhow::bail!("outbound dial timeout after 8s"),
                 };
             }
             _ = tick.tick() => {
@@ -1124,41 +1253,23 @@ async fn handle_http_proxy(
     full_request: &str,
     _request_bytes: &[u8],
 ) -> Result<()> {
-    // 解析目标 URL
     let (host, port, path) = parse_http_url(target)?;
+    let (dest, domain) = parse_connect_target(&format!("{host}:{port}"))?;
 
-    // 解析目标地址
-    let dest = SocketAddr::from(([0, 0, 0, 0], port));
-    let _domain = Some(host.clone());
-
-    // 解析 DNS
-    let dest = resolve_destination(&dns, dest, Some(&host)).await?;
-
-    // 创建元数据
-    let metadata = Metadata {
-        network: Network::Tcp,
-        source: Some(peer),
-        destination: Some(dest),
-        domain: Some(host.clone()),
-        protocol: Some("http".to_string()),
-        process_name: None,
-        process_path: None,
-        inbound_tag: inbound_tag.to_string(),
-        inbound_type: inbound_type.to_string(),
-        user: None,
-    };
-
-    // 连接到目标服务器
-    let mut remote = dialer.dial_tcp(&metadata, dest).await?;
-
-    // 重写请求（去掉代理格式，改为标准 HTTP 请求）
     let rewritten_request = rewrite_http_request(method, &host, port, &path, full_request)?;
 
-    // 发送请求到目标服务器
-    remote.write_all(rewritten_request.as_bytes()).await?;
-
-    // 双向转发数据
-    relay_bidirectional(client, remote).await
+    dial_and_relay_with_initial_data(
+        client,
+        rewritten_request.into_bytes(),
+        peer,
+        inbound_tag,
+        inbound_type,
+        dialer,
+        dns,
+        dest,
+        domain,
+    )
+    .await
 }
 
 fn parse_http_url(url: &str) -> Result<(String, u16, String)> {

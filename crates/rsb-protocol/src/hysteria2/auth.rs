@@ -1,4 +1,5 @@
-pub const MBPS_TO_BPS: u64 = 1_000_000;
+/// Megabit/s → byte/s, matching sing-quic `hysteria.MbpsToBps` (125_000).
+pub const MBPS_TO_BPS: u64 = 125_000;
 
 use http::{HeaderMap, StatusCode};
 

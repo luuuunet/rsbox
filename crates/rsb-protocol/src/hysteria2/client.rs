@@ -7,20 +7,26 @@ use http::{Request, StatusCode};
 use quinn::{ClientConfig, Endpoint, TransportConfig};
 use rsb_core::{BoxError, Network, Outbound, ProxyConn, ProxyUdpSocket, SplitProxy};
 use serde_json::Value;
+use std::io;
 use std::net::SocketAddr;
+use std::pin::Pin;
 use std::sync::atomic::{AtomicBool, AtomicU16, AtomicU32, Ordering};
 use std::sync::Arc;
+use std::task::{Context as TaskContext, Poll};
 use std::time::{Duration, Instant};
-use tokio::io::{AsyncReadExt, AsyncWriteExt};
+use tokio::io::{AsyncRead, AsyncReadExt, AsyncWriteExt, ReadBuf};
 
 static SESSION_COUNTER: AtomicU32 = AtomicU32::new(1);
 
-const DEFAULT_IDLE_TIMEOUT: Duration = Duration::from_secs(60);
-const DEFAULT_KEEP_ALIVE: Duration = Duration::from_secs(5);
+const DEFAULT_IDLE_TIMEOUT: Duration = Duration::from_secs(30);
+const DEFAULT_KEEP_ALIVE: Duration = Duration::from_secs(10);
 const DEFAULT_PROBE_INTERVAL: Duration = Duration::from_secs(20);
-const DEFAULT_STREAM_OPEN_TIMEOUT: Duration = Duration::from_secs(8);
+const DEFAULT_STREAM_OPEN_TIMEOUT: Duration = Duration::from_secs(15);
 const DEFAULT_MAX_SESSION_AGE: Duration = Duration::from_secs(30 * 60);
 const PROBE_STREAM_TIMEOUT: Duration = Duration::from_secs(4);
+/// sing-quic hysteria defaults (8 MB stream / 20 MB connection).
+const DEFAULT_STREAM_RECV_WINDOW: u32 = 8 * 1024 * 1024;
+const DEFAULT_CONN_RECV_WINDOW: u32 = DEFAULT_STREAM_RECV_WINDOW * 5 / 2;
 
 struct Hy2Session {
     endpoint: Endpoint,
@@ -34,8 +40,9 @@ struct Hy2Session {
 
 struct Hy2Shared {
     session: tokio::sync::Mutex<Option<Hy2Session>>,
-    /// Ensures only one reconnect runs at a time (prevents orphan QUIC sessions).
-    connect_lock: tokio::sync::Mutex<()>,
+    /// Coalesce concurrent QUIC handshakes (sing-box clientOffer pattern).
+    connect_inflight: AtomicBool,
+    connect_notify: tokio::sync::Notify,
     current_port: AtomicU16,
     generation: AtomicU32,
     hop_task_started: AtomicBool,
@@ -166,7 +173,8 @@ impl Hysteria2Outbound {
                 .unwrap_or(false),
             shared: Arc::new(Hy2Shared {
                 session: tokio::sync::Mutex::new(None),
-                connect_lock: tokio::sync::Mutex::new(()),
+                connect_inflight: AtomicBool::new(false),
+                connect_notify: tokio::sync::Notify::new(),
                 current_port: AtomicU16::new(port),
                 generation: AtomicU32::new(0),
                 hop_task_started: AtomicBool::new(false),
@@ -224,14 +232,40 @@ impl Hysteria2Outbound {
         self.maybe_start_port_hopping();
         self.maybe_start_probe_loop();
 
-        let port = self.shared.current_port.load(Ordering::Relaxed);
-        if let Some(conn) = self.cached_connection(port).await {
-            return Ok(conn);
+        loop {
+            let port = self.shared.current_port.load(Ordering::Relaxed);
+            if let Some(conn) = self.cached_connection(port).await {
+                return Ok(conn);
+            }
+
+            if self
+                .shared
+                .connect_inflight
+                .compare_exchange(false, true, Ordering::SeqCst, Ordering::SeqCst)
+                .is_ok()
+            {
+                struct ConnectGuard<'a> {
+                    shared: &'a Hy2Shared,
+                }
+                impl Drop for ConnectGuard<'_> {
+                    fn drop(&mut self) {
+                        self.shared
+                            .connect_inflight
+                            .store(false, Ordering::SeqCst);
+                        self.shared.connect_notify.notify_waiters();
+                    }
+                }
+                let _guard = ConnectGuard {
+                    shared: &self.shared,
+                };
+                return self.establish_session(port).await;
+            }
+
+            self.shared.connect_notify.notified().await;
         }
+    }
 
-        // Single-flight reconnect: concurrent callers wait on the same mutex.
-        let _connect_guard = self.shared.connect_lock.lock().await;
-
+    async fn establish_session(&self, port: u16) -> Result<Arc<quinn::Connection>> {
         if let Some(conn) = self.cached_connection(port).await {
             return Ok(conn);
         }
@@ -284,13 +318,12 @@ impl Hysteria2Outbound {
                 };
 
                 if !probe_connection(&conn).await {
-                    tracing::warn!(
+                    tracing::debug!(
                         tag = %tag,
                         conn_id,
                         generation,
-                        "hysteria2: probe failed, resetting session"
+                        "hysteria2: probe open_bi failed (session kept)"
                     );
-                    reset_session(&shared, "probe failed").await;
                 }
             }
         });
@@ -351,6 +384,10 @@ impl Hysteria2Outbound {
         if !self.disable_mtu_discovery {
             transport_cfg.mtu_discovery_config(Some(quinn::MtuDiscoveryConfig::default()));
         }
+        transport_cfg.stream_receive_window(DEFAULT_STREAM_RECV_WINDOW.into());
+        transport_cfg.receive_window(DEFAULT_CONN_RECV_WINDOW.into());
+        transport_cfg.max_concurrent_bidi_streams(256u32.into());
+        transport_cfg.max_concurrent_uni_streams(256u32.into());
         client_cfg.transport_config(Arc::new(transport_cfg));
 
         let addr = tokio::net::lookup_host(format!("{}:{}", self.server, port))
@@ -413,10 +450,10 @@ impl Hysteria2Outbound {
             .method("POST")
             .uri("https://hysteria/auth")
             .header("hysteria-auth", &self.password);
-        if self.up_mbps > 0 {
+        if self.down_mbps > 0 {
             req = req.header(
                 "hysteria-cc-rx",
-                (self.up_mbps as u64 * auth::MBPS_TO_BPS).to_string(),
+                (self.down_mbps as u64 * auth::MBPS_TO_BPS).to_string(),
             );
         }
         let padding = auth::random_padding(64, 512);
@@ -482,23 +519,73 @@ impl Hysteria2Outbound {
         let req = protocol::encode_tcp_request(&target, padding_len);
         send.write_all(&req).await?;
 
-        let mut resp_buf = vec![0u8; 2048];
-        let read_result =
-            tokio::time::timeout(Duration::from_secs(10), recv.read(&mut resp_buf)).await;
-
-        let n = match read_result {
-            Ok(Ok(Some(n))) => n,
-            Ok(Ok(None)) => anyhow::bail!("hysteria2: stream closed by server"),
-            Ok(Err(e)) => return Err(e.into()),
-            Err(_) => anyhow::bail!("hysteria2: read timeout"),
-        };
-
-        let mut cursor = &resp_buf[..n];
-        let (ok, _) = protocol::decode_tcp_response(&mut cursor)?;
+        let (ok, prefix) = read_tcp_response(&mut recv).await?;
         if !ok {
             anyhow::bail!("hysteria2 tcp request rejected");
         }
-        Ok(Box::new(SplitProxy::new(recv, send)))
+        let reader: Box<dyn AsyncRead + Send + Unpin> = if prefix.is_empty() {
+            Box::new(recv)
+        } else {
+            Box::new(PrefixedReader::new(recv, prefix))
+        };
+        Ok(Box::new(SplitProxy::new(reader, send)))
+    }
+}
+
+/// Read a full Hy2 TCPResponse from a QUIC recv stream (handles partial reads).
+async fn read_tcp_response(recv: &mut quinn::RecvStream) -> Result<(bool, Vec<u8>)> {
+    let mut buf = bytes::BytesMut::with_capacity(256);
+    let mut chunk = [0u8; 512];
+    loop {
+        if !buf.is_empty() {
+            if let Some((ok, _msg)) = protocol::try_decode_tcp_response(&mut buf)? {
+                return Ok((ok, buf.to_vec()));
+            }
+        }
+        let read_fut = recv.read(&mut chunk);
+        let n = match tokio::time::timeout(Duration::from_secs(10), read_fut).await {
+            Ok(Ok(Some(n))) => n,
+            Ok(Ok(None)) => anyhow::bail!("hysteria2: stream closed before tcp response"),
+            Ok(Err(e)) => return Err(e.into()),
+            Err(_) => anyhow::bail!("hysteria2: read tcp response timeout"),
+        };
+        buf.extend_from_slice(&chunk[..n]);
+        if buf.len() > 8192 {
+            anyhow::bail!("hysteria2: tcp response too large");
+        }
+    }
+}
+
+struct PrefixedReader {
+    inner: quinn::RecvStream,
+    prefix: Vec<u8>,
+    pos: usize,
+}
+
+impl PrefixedReader {
+    fn new(inner: quinn::RecvStream, prefix: Vec<u8>) -> Self {
+        Self {
+            inner,
+            prefix,
+            pos: 0,
+        }
+    }
+}
+
+impl AsyncRead for PrefixedReader {
+    fn poll_read(
+        mut self: Pin<&mut Self>,
+        cx: &mut TaskContext<'_>,
+        buf: &mut ReadBuf<'_>,
+    ) -> Poll<io::Result<()>> {
+        if self.pos < self.prefix.len() {
+            let remain = &self.prefix[self.pos..];
+            let take = remain.len().min(buf.remaining());
+            buf.put_slice(&remain[..take]);
+            self.pos += take;
+            return Poll::Ready(Ok(()));
+        }
+        Pin::new(&mut self.inner).poll_read(cx, buf)
     }
 }
 
@@ -520,13 +607,21 @@ impl Outbound for Hysteria2Outbound {
     ) -> Result<ProxyConn, BoxError> {
         match self.dial_tcp_inner(destination, domain).await {
             Ok(conn) => Ok(conn),
-            Err(err) => {
-                tracing::warn!(
+            Err(first) => {
+                if should_reset_hy2_session(&first) {
+                    tracing::warn!(
+                        tag = %self.tag,
+                        error = %first,
+                        "hysteria2: session error, reconnecting once"
+                    );
+                    self.reset_session("dial retry").await;
+                    return self.dial_tcp_inner(destination, domain).await;
+                }
+                tracing::debug!(
                     tag = %self.tag,
-                    error = %err,
-                    "hysteria2: dial failed, reconnecting once"
+                    error = %first,
+                    "hysteria2: stream dial retry on same session"
                 );
-                self.reset_session("dial retry").await;
                 self.dial_tcp_inner(destination, domain).await
             }
         }
@@ -591,6 +686,18 @@ fn next_port_for(shared: &Hy2Shared) -> u16 {
     } else {
         shared.port
     }
+}
+
+fn should_reset_hy2_session(err: &BoxError) -> bool {
+    let msg = err.to_string().to_lowercase();
+    msg.contains("auth failed")
+        || msg.contains("quic connect")
+        || msg.contains("hysteria2: quic connect timeout")
+        || msg.contains("h3 connection closed")
+        || msg.contains("connection lost")
+        || msg.contains("connection closed")
+        || msg.contains("application closed")
+        || msg.contains("timed out waiting for connection")
 }
 
 fn format_address(addr: SocketAddr) -> String {
