@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # rsbox installation script
-# Usage: curl -fsSL https://raw.githubusercontent.com/yourusername/rsbox/main/install.sh | bash
+# Usage: curl -fsSL https://raw.githubusercontent.com/luuuunet/rsbox/main/install.sh | bash
 
 set -e
 
@@ -11,9 +11,10 @@ YELLOW='\033[1;33m'
 NC='\033[0m' # No Color
 
 # Configuration
-REPO="yourusername/rsbox"
+REPO="luuuunet/rsbox"
 INSTALL_DIR="${INSTALL_DIR:-$HOME/.local/bin}"
 BINARY_NAME="rsbox"
+MIN_RSQ_VERSION="0.1.5"
 
 # Detect OS and architecture
 detect_platform() {
@@ -53,35 +54,54 @@ detect_platform() {
     echo -e "${GREEN}Detected platform: $OS-$ARCH${NC}"
 }
 
-# Get latest release version
+asset_name() {
+    if [ "$OS" = "windows" ]; then
+        echo "rsbox-windows-${ARCH}.exe"
+    else
+        echo "rsbox-${OS}-${ARCH}"
+    fi
+}
+
+# Get release version (prefer latest tag >= MIN_RSQ_VERSION)
 get_latest_version() {
     echo -e "${YELLOW}Fetching latest version...${NC}"
     VERSION=$(curl -fsSL "https://api.github.com/repos/$REPO/releases/latest" | grep '"tag_name"' | sed -E 's/.*"([^"]+)".*/\1/')
 
     if [ -z "$VERSION" ]; then
-        echo -e "${RED}Failed to fetch latest version${NC}"
-        exit 1
+        VERSION="v${MIN_RSQ_VERSION}"
+        echo -e "${YELLOW}Could not fetch latest release; falling back to ${VERSION}${NC}"
+    else
+        echo -e "${GREEN}Latest version: $VERSION${NC}"
     fi
+}
 
-    echo -e "${GREEN}Latest version: $VERSION${NC}"
+rsbox_supports_rsq() {
+    [ -x "$TMP_FILE" ] || return 1
+    printf '%s' '{"inbounds":[{"type":"rsq","tag":"probe","listen":"127.0.0.1","listen_port":65503}]}' \
+        | "$TMP_FILE" check -c /dev/stdin >/dev/null 2>&1
 }
 
 # Download binary
 download_binary() {
-    DOWNLOAD_URL="https://github.com/$REPO/releases/download/$VERSION/rsbox-$OS-$ARCH"
-
-    if [ "$OS" = "windows" ]; then
-        DOWNLOAD_URL="${DOWNLOAD_URL}.exe"
-    fi
+    local asset
+    asset="$(asset_name)"
+    DOWNLOAD_URL="https://github.com/$REPO/releases/download/$VERSION/$asset"
 
     echo -e "${YELLOW}Downloading from: $DOWNLOAD_URL${NC}"
 
     TMP_FILE="/tmp/$BINARY_NAME"
 
     if command -v curl >/dev/null 2>&1; then
-        curl -fsSL "$DOWNLOAD_URL" -o "$TMP_FILE"
+        if ! curl -fsSL "$DOWNLOAD_URL" -o "$TMP_FILE"; then
+            echo -e "${RED}Download failed. RSQ support requires rsbox >= ${MIN_RSQ_VERSION}.${NC}"
+            echo -e "${RED}See: https://github.com/$REPO/releases${NC}"
+            exit 1
+        fi
     elif command -v wget >/dev/null 2>&1; then
-        wget -q "$DOWNLOAD_URL" -O "$TMP_FILE"
+        if ! wget -q "$DOWNLOAD_URL" -O "$TMP_FILE"; then
+            echo -e "${RED}Download failed. RSQ support requires rsbox >= ${MIN_RSQ_VERSION}.${NC}"
+            exit 1
+        fi
     else
         echo -e "${RED}Neither curl nor wget found. Please install one of them.${NC}"
         exit 1
@@ -93,6 +113,11 @@ download_binary() {
     fi
 
     chmod +x "$TMP_FILE"
+
+    if ! rsbox_supports_rsq; then
+        echo -e "${RED}Downloaded binary does not support RSQ inbound (need >= ${MIN_RSQ_VERSION}).${NC}"
+        exit 1
+    fi
 }
 
 # Install binary
@@ -134,8 +159,9 @@ verify_installation() {
 print_usage() {
     echo ""
     echo "Next steps:"
-    echo "  1. Create a config file: config.json"
-    echo "  2. Run: rsbox run -c config.json"
+    echo "  1. Generate QUIC TLS certs: rsbox rsq-gen-cert --output-dir ./certs --name your.domain"
+    echo "  2. Create a config file: config.json (inbound type: rsq)"
+    echo "  3. Run: rsbox run -c config.json"
     echo ""
     echo "For more information, visit:"
     echo "  https://github.com/$REPO"

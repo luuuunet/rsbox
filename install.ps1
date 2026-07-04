@@ -1,13 +1,14 @@
 #!/usr/bin/env pwsh
 # rsbox Windows installer script
-# Usage: iwr -useb https://raw.githubusercontent.com/yourusername/rsbox/main/install.ps1 | iex
+# Usage: iwr -useb https://raw.githubusercontent.com/luuuunet/rsbox/main/install.ps1 | iex
 
 $ErrorActionPreference = "Stop"
 
 # Configuration
-$REPO = "yourusername/rsbox"
+$REPO = "luuuunet/rsbox"
 $BINARY_NAME = "rsbox.exe"
 $INSTALL_DIR = "$env:LOCALAPPDATA\rsbox"
+$MIN_RSQ_VERSION = "0.1.5"
 
 function Write-ColorOutput($ForegroundColor) {
     $fc = $host.UI.RawUI.ForegroundColor
@@ -28,8 +29,9 @@ function Get-LatestVersion {
         return $version
     }
     catch {
-        Write-ColorOutput Red "Failed to fetch latest version"
-        exit 1
+        $fallback = "v$MIN_RSQ_VERSION"
+        Write-ColorOutput Yellow "Could not fetch latest release; falling back to $fallback"
+        return $fallback
     }
 }
 
@@ -46,6 +48,22 @@ function Get-Architecture {
     }
 }
 
+function Test-RsqSupport($binaryPath) {
+    $probe = '{"inbounds":[{"type":"rsq","tag":"probe","listen":"127.0.0.1","listen_port":65503}]}'
+    $probeFile = Join-Path $env:TEMP "rsbox-rsq-probe.json"
+    Set-Content -Path $probeFile -Value $probe -Encoding utf8NoBOM
+    try {
+        & $binaryPath check -c $probeFile 2>$null
+        return $LASTEXITCODE -eq 0
+    }
+    catch {
+        return $false
+    }
+    finally {
+        Remove-Item -Path $probeFile -ErrorAction SilentlyContinue
+    }
+}
+
 function Download-Binary($version, $arch) {
     $downloadUrl = "https://github.com/$REPO/releases/download/$version/rsbox-windows-$arch.exe"
     $tempFile = "$env:TEMP\$BINARY_NAME"
@@ -54,24 +72,29 @@ function Download-Binary($version, $arch) {
 
     try {
         Invoke-WebRequest -Uri $downloadUrl -OutFile $tempFile -UseBasicParsing
-        Write-ColorOutput Green "✓ Downloaded successfully"
-        return $tempFile
     }
     catch {
         Write-ColorOutput Red "Download failed: $_"
+        Write-ColorOutput Red "RSQ support requires rsbox >= $MIN_RSQ_VERSION"
         exit 1
     }
+
+    if (-not (Test-RsqSupport $tempFile)) {
+        Write-ColorOutput Red "Downloaded binary does not support RSQ inbound (need >= $MIN_RSQ_VERSION)."
+        exit 1
+    }
+
+    Write-ColorOutput Green "✓ Downloaded successfully"
+    return $tempFile
 }
 
 function Install-Binary($tempFile) {
     Write-ColorOutput Yellow "Installing to $INSTALL_DIR..."
 
-    # Create installation directory
     if (-not (Test-Path $INSTALL_DIR)) {
         New-Item -ItemType Directory -Path $INSTALL_DIR -Force | Out-Null
     }
 
-    # Move binary
     $targetPath = "$INSTALL_DIR\$BINARY_NAME"
     Move-Item -Path $tempFile -Destination $targetPath -Force
 
@@ -86,8 +109,6 @@ function Add-ToPath {
 
         $newPath = "$currentPath;$INSTALL_DIR"
         [Environment]::SetEnvironmentVariable("Path", $newPath, "User")
-
-        # Update current session
         $env:Path = "$env:Path;$INSTALL_DIR"
 
         Write-ColorOutput Green "✓ Added to PATH"
@@ -118,15 +139,15 @@ function Test-Installation {
 function Show-NextSteps {
     Write-Output ""
     Write-Output "Next steps:"
-    Write-Output "  1. Create a config file: config.json"
-    Write-Output "  2. Run: rsbox run -c config.json"
+    Write-Output "  1. Generate QUIC TLS certs: rsbox rsq-gen-cert --output-dir .\certs --name your.domain"
+    Write-Output "  2. Create a config file: config.json (inbound type: rsq)"
+    Write-Output "  3. Run: rsbox run -c config.json"
     Write-Output ""
     Write-Output "For more information, visit:"
     Write-Output "  https://github.com/$REPO"
     Write-Output ""
 }
 
-# Main installation
 try {
     Write-ColorOutput Green "rsbox Installation Script (Windows)"
     Write-Output ""
