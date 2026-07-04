@@ -187,6 +187,12 @@ impl ConnectionManager {
             out.push((format!("user>>>{name}>>>traffic>>>uplink"), up));
             out.push((format!("user>>>{name}>>>traffic>>>downlink"), down));
         }
+        for name in self.users.user_names() {
+            let active = self.user_active_count(&name) as u64;
+            if active > 0 {
+                out.push((format!("user>>>{name}>>>active"), active));
+            }
+        }
         out
     }
 
