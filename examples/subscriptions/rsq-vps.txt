@@ -1,0 +1,1 @@
+rsq://rsq_EL97_SLWI8bowEb2@s.lulunet.cc:18443?sni=s.lulunet.cc&profile=video&obfs=salamander&obfs-password=rsqobfs_ioIxewpGpPE&obfs-version=2&insecure=1#rsq-vps

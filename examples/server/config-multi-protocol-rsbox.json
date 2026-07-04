@@ -152,6 +152,32 @@
       "listen_port": 8389,
       "method": "chacha20-ietf-poly1305",
       "password": "ss_chacha_C-39jcBnhSE"
+    },
+    {
+      "type": "rsq",
+      "tag": "rsq-in",
+      "listen": "::",
+      "listen_port": 18443,
+      "users": [
+        {
+          "name": "u1",
+          "password": "rsq_EL97_SLWI8bowEb2"
+        }
+      ],
+      "tls": {
+        "enabled": true,
+        "server_name": "s.lulunet.cc",
+        "certificate_path": "/etc/sing-box/fullchain.pem",
+        "key_path": "/etc/sing-box/privkey.pem"
+      },
+      "obfs": {
+        "enabled": true,
+        "password": "rsqobfs_ioIxewpGpPE",
+        "version": 2
+      },
+      "udp": true,
+      "up_mbps": 200,
+      "down_mbps": 200
     }
   ],
   "outbounds": [

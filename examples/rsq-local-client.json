@@ -1,0 +1,33 @@
+{
+  "log": { "level": "info", "timestamp": true },
+  "dns": {
+    "servers": [{ "tag": "local", "address": "223.5.5.5" }],
+    "final": "local"
+  },
+  "inbounds": [
+    {
+      "type": "mixed",
+      "tag": "mixed-in",
+      "listen": "127.0.0.1",
+      "listen_port": 17891
+    }
+  ],
+  "outbounds": [
+    {
+      "type": "rsq",
+      "tag": "proxy",
+      "server": "127.0.0.1",
+      "server_port": 18443,
+      "password": "rsq-local-test",
+      "traffic_profile": "video",
+      "tls": {
+        "enabled": true,
+        "server_name": "rsq.local",
+        "insecure": true
+      },
+      "obfs": { "enabled": true, "password": "rsq-local-test" }
+    },
+    { "type": "direct", "tag": "direct" }
+  ],
+  "route": { "final": "proxy" }
+}

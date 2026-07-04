@@ -7,15 +7,19 @@ license.workspace = true
 [dependencies]
 anyhow.workspace = true
 async-trait.workspace = true
+base64.workspace = true
 dashmap.workspace = true
 if-addrs = "0.14"
+reqwest = { workspace = true, features = ["rustls-tls"] }
 rsb-config.workspace = true
 rsb-constant.workspace = true
+serde = { workspace = true, features = ["derive"] }
 serde_json.workspace = true
 socket2 = { version = "0.6", features = ["all"] }
 tokio.workspace = true
 sha2.workspace = true
 tracing.workspace = true
+url = "2"
 uuid.workspace = true
 
 [target.'cfg(unix)'.dependencies]

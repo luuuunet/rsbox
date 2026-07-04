@@ -6,7 +6,7 @@ use crate::group::OutboundController;
 use crate::tun_mode;
 use crate::{
     anytls, chain_outbound, direct, dns_inbound, dns_outbound, group, http_outbound, hysteria2,
-    hysteria_outbound, inbound_proxy, legacy, legacy_inbound, shadowsocks, shadowtls, socks,
+    hysteria_outbound, inbound_proxy, legacy, legacy_inbound, rsq, shadowsocks, shadowtls, socks,
     trojan, tuic, vless, vmess, wireguard_outbound,
 };
 use anyhow::{bail, Result};
@@ -53,6 +53,7 @@ pub fn build_outbound(
             shared.clone(),
         )?),
         TYPE_HYSTERIA2 => Box::new(hysteria2::Hysteria2Outbound::new(tag, ob.raw.clone())?),
+        TYPE_RSQ => Box::new(rsq::RsqOutbound::new(tag, ob.raw.clone())?),
         TYPE_TROJAN => Box::new(trojan::TrojanOutbound::new(tag, ob.raw.clone(), shared.clone())?),
         TYPE_VLESS => Box::new(vless::VlessOutbound::new(tag, ob.raw.clone(), shared.clone())?),
         TYPE_VMESS => Box::new(vmess::VmessOutbound::new(tag, ob.raw.clone(), shared.clone())?),
@@ -114,6 +115,11 @@ pub fn build_inbound(
             dialer.connections(),
         )?),
         TYPE_HYSTERIA2 => Box::new(hysteria2::Hysteria2Inbound::new(
+            tag,
+            ib.raw.clone(),
+            dialer.connections(),
+        )?),
+        TYPE_RSQ => Box::new(rsq::RsqInbound::new(
             tag,
             ib.raw.clone(),
             dialer.connections(),

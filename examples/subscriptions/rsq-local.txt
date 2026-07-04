@@ -1,0 +1,2 @@
+rsq://rsq-user-a@127.0.0.1:18443?sni=rsq.local&insecure=1&profile=video&obfs=salamander&obfs-password=rsq-local-obfs#local-user-a
+rsq://rsq-user-b@127.0.0.1:18443?sni=rsq.local&insecure=1&profile=balanced&obfs=salamander&obfs-password=rsq-local-obfs#local-user-b

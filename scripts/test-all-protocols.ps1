@@ -63,9 +63,69 @@ function Test-WireGuard($cfgPath) {
     }
 }
 
+function Test-RsqRemote($cfgPath) {
+    Stop-Rsbox
+    & $Rsbox check -c $cfgPath 2>&1 | Out-Null
+    if ($LASTEXITCODE -ne 0) {
+        return [pscustomobject]@{ Protocol = "rsq"; Check = "FAIL"; Http = "-"; Time = "-"; CloseWait = "-" }
+    }
+    $logOut = Join-Path $env:TEMP "rsbox-test-rsq-out.log"
+    $logErr = Join-Path $env:TEMP "rsbox-test-rsq-err.log"
+    $p = Start-Process -FilePath $Rsbox -ArgumentList @("run", "-c", $cfgPath) -PassThru -WindowStyle Hidden `
+        -RedirectStandardOutput $logOut -RedirectStandardError $logErr
+    $listen = $null
+    for ($i = 0; $i -lt 30; $i++) {
+        Start-Sleep -Milliseconds 500
+        if ($p.HasExited) { break }
+        $listen = Get-NetTCPConnection -LocalPort $Port -State Listen -ErrorAction SilentlyContinue
+        if ($listen) { break }
+    }
+    if ($p.HasExited -or -not $listen) {
+        Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue
+        $tail = Get-Content $logErr -Tail 6 -ErrorAction SilentlyContinue
+        return [pscustomobject]@{ Protocol = "rsq"; Check = "OK"; Http = "NO_LISTEN"; Time = "-"; CloseWait = "-"; Note = ($tail -join " ") }
+    }
+    Start-Sleep -Milliseconds 800
+    $sw = [System.Diagnostics.Stopwatch]::StartNew()
+    $code = (curl.exe -x "http://127.0.0.1:$Port" -sS -o NUL -w "%{http_code}" --connect-timeout 30 --max-time 60 $TestUrl 2>$null) | Out-String
+    $code = ($code -replace '[^\d]', '').Trim()
+    $sw.Stop()
+    Stop-Process -Id $p.Id -Force -ErrorAction SilentlyContinue
+    Start-Sleep -Seconds 1
+    $ok = $code -match "^(200|204|301|302)$"
+    [pscustomobject]@{
+        Protocol = "rsq"
+        Check    = "OK"
+        Http     = if ($ok) { $code } else { "FAIL($code)" }
+        Time     = "$([math]::Round($sw.Elapsed.TotalSeconds,1))s"
+        CloseWait = "-"
+    }
+}
+
+function Test-RsqLocal {
+    $basic = Join-Path $PSScriptRoot "test-rsq-local.ps1"
+    $sub = Join-Path $PSScriptRoot "test-rsq-subscription-local.ps1"
+    & $basic -Quiet
+    if ($LASTEXITCODE -ne 0) {
+        return [pscustomobject]@{ Protocol = "rsq"; Check = "OK"; Http = "FAIL(basic)"; Time = "-"; CloseWait = "-" }
+    }
+    & $sub -Quiet
+    if ($LASTEXITCODE -ne 0) {
+        return [pscustomobject]@{ Protocol = "rsq"; Check = "OK"; Http = "FAIL(sub)"; Time = "-"; CloseWait = "-" }
+    }
+    return [pscustomobject]@{ Protocol = "rsq"; Check = "OK"; Http = "200"; Time = "-"; CloseWait = "-" }
+}
+
 function Test-Protocol($name, $cfgPath) {
     if ($name -eq "wireguard") {
         return Test-WireGuard $cfgPath
+    }
+    if ($name -eq "rsq") {
+        $raw = Get-Content $cfgPath -Raw -ErrorAction SilentlyContinue
+        if ($raw -match '"server"\s*:\s*"127\.0\.0\.1"') {
+            return Test-RsqLocal
+        }
+        return Test-RsqRemote $cfgPath
     }
     Stop-Rsbox
     & $Rsbox check -c $cfgPath 2>&1 | Out-Null

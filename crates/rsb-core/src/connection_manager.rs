@@ -129,7 +129,7 @@ impl ConnectionManager {
         runtime.active.fetch_add(1, Ordering::SeqCst);
         Ok(UserSessionGuard {
             _name: name.to_string(),
-            runtime,
+            runtime: Some(runtime),
         })
     }
 
@@ -325,12 +325,24 @@ impl ConnectionManager {
 
 pub struct UserSessionGuard {
     _name: String,
-    runtime: Arc<UserRuntime>,
+    runtime: Option<Arc<UserRuntime>>,
+}
+
+impl UserSessionGuard {
+    /// Placeholder for per-stream relays inside an already-acquired QUIC session.
+    pub fn detached() -> Self {
+        Self {
+            _name: String::new(),
+            runtime: None,
+        }
+    }
 }
 
 impl Drop for UserSessionGuard {
     fn drop(&mut self) {
-        self.runtime.active.fetch_sub(1, Ordering::SeqCst);
+        if let Some(runtime) = self.runtime.take() {
+            runtime.active.fetch_sub(1, Ordering::SeqCst);
+        }
     }
 }
 

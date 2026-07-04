@@ -2928,7 +2928,7 @@ dependencies = [
 
 [[package]]
 name = "rsb-api"
-version = "0.1.0"
+version = "0.1.4"
 dependencies = [
  "anyhow",
  "axum 0.8.9",
@@ -2947,7 +2947,7 @@ dependencies = [
 
 [[package]]
 name = "rsb-config"
-version = "0.1.0"
+version = "0.1.4"
 dependencies = [
  "anyhow",
  "rsb-constant",
@@ -2957,31 +2957,35 @@ dependencies = [
 
 [[package]]
 name = "rsb-constant"
-version = "0.1.0"
+version = "0.1.4"
 
 [[package]]
 name = "rsb-core"
-version = "0.1.0"
+version = "0.1.4"
 dependencies = [
  "anyhow",
  "async-trait",
+ "base64 0.22.1",
  "dashmap",
  "if-addrs",
  "libc",
+ "reqwest",
  "rsb-config",
  "rsb-constant",
+ "serde",
  "serde_json",
  "sha2",
  "socket2 0.6.4",
  "tokio",
  "tracing",
+ "url",
  "uuid",
  "windows-sys 0.59.0",
 ]
 
 [[package]]
 name = "rsb-dns"
-version = "0.1.0"
+version = "0.1.4"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
@@ -2997,7 +3001,7 @@ dependencies = [
 
 [[package]]
 name = "rsb-libbox"
-version = "0.1.0"
+version = "0.1.4"
 dependencies = [
  "anyhow",
  "rsb-api",
@@ -3011,7 +3015,7 @@ dependencies = [
 
 [[package]]
 name = "rsb-protocol"
-version = "0.1.0"
+version = "0.1.4"
 dependencies = [
  "aes",
  "aes-gcm",
@@ -3043,6 +3047,7 @@ dependencies = [
  "protoc-bin-vendored",
  "protox",
  "quinn",
+ "quinn-proto",
  "rand 0.9.4",
  "rcgen 0.13.2",
  "reqwest",
@@ -3081,7 +3086,7 @@ dependencies = [
 
 [[package]]
 name = "rsb-route"
-version = "0.1.0"
+version = "0.1.4"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -3097,7 +3102,7 @@ dependencies = [
 
 [[package]]
 name = "rsb-wireguard"
-version = "0.1.0"
+version = "0.1.4"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
@@ -3111,13 +3116,14 @@ dependencies = [
 
 [[package]]
 name = "rsbox"
-version = "0.1.0"
+version = "0.1.4"
 dependencies = [
  "anyhow",
  "clap",
  "rsb-api",
  "rsb-config",
  "rsb-constant",
+ "rsb-core",
  "rsb-protocol",
  "rustls",
  "tokio",

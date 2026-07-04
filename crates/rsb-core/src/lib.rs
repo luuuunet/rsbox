@@ -8,6 +8,7 @@ pub mod process;
 pub mod proxy_stream;
 pub mod rate_limit;
 pub mod runtime;
+pub mod subscription;
 pub mod udp;
 pub mod user_registry;
 
@@ -15,6 +16,7 @@ pub use connection_manager::{
     ConnectionInfo, ConnectionManager, SharedConnectionManager, TrafficStats, UserSessionGuard,
 };
 pub use rate_limit::RateLimiter;
+pub use subscription::{merge_outbound_providers, Subscription};
 pub use user_registry::{trojan_password_hash, UserLimits, UserRecord, UserRegistry};
 pub use interface::{detect_default_interface, is_private_ip, tcp_connect_via, udp_bind_via};
 pub use platform::install_routes;

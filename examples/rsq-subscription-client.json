@@ -1,0 +1,22 @@
+{
+  "log": { "level": "info", "timestamp": true },
+  "inbounds": [
+    {
+      "type": "mixed",
+      "tag": "mixed-in",
+      "listen": "127.0.0.1",
+      "listen_port": 17890
+    }
+  ],
+  "outbound_providers": [
+    {
+      "type": "subscription",
+      "url": "file://subscriptions/rsq-local.txt",
+      "selector_tag": "rsq-sub"
+    }
+  ],
+  "outbounds": [
+    { "type": "direct", "tag": "direct" }
+  ],
+  "route": { "final": "rsq-sub" }
+}

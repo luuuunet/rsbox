@@ -26,6 +26,8 @@ pub struct Options {
     pub services: Vec<Service>,
     #[serde(default)]
     pub experimental: Option<ExperimentalOptions>,
+    #[serde(default)]
+    pub outbound_providers: Vec<OutboundProvider>,
 }
 
 #[derive(Debug, Clone, Deserialize, Default)]
@@ -178,6 +180,20 @@ pub struct DnsServer {
     pub detour: Option<String>,
     #[serde(flatten)]
     pub raw: Value,
+}
+
+#[derive(Debug, Clone, Deserialize, Default)]
+pub struct OutboundProvider {
+    #[serde(rename = "type")]
+    pub kind: String,
+    pub url: String,
+    #[serde(default)]
+    pub tag: Option<String>,
+    #[serde(default)]
+    pub user_agent: Option<String>,
+    /// When set, append a `selector` outbound grouping all nodes from this provider.
+    #[serde(default)]
+    pub selector_tag: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize, Default)]

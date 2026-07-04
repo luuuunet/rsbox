@@ -1,0 +1,53 @@
+{
+  "log": {
+    "level": "warn",
+    "timestamp": true
+  },
+  "dns": {
+    "servers": [
+      {
+        "tag": "local-dns",
+        "address": "223.5.5.5"
+      }
+    ],
+    "final": "local-dns",
+    "strategy": "prefer_ipv4"
+  },
+  "inbounds": [
+    {
+      "type": "mixed",
+      "tag": "mixed-in",
+      "listen": "127.0.0.1",
+      "listen_port": 17891,
+      "sniff": true
+    }
+  ],
+  "outbounds": [
+    {
+      "type": "rsq",
+      "tag": "proxy",
+      "server": "s.lulunet.cc",
+      "server_port": 18443,
+      "password": "rsq_EL97_SLWI8bowEb2",
+      "traffic_profile": "video",
+      "tls": {
+        "enabled": true,
+        "server_name": "s.lulunet.cc",
+        "insecure": true
+      },
+      "obfs": {
+        "enabled": true,
+        "password": "rsqobfs_ioIxewpGpPE",
+        "version": 2
+      }
+    },
+    {
+      "type": "direct",
+      "tag": "direct"
+    }
+  ],
+  "route": {
+    "auto_detect_interface": true,
+    "final": "proxy"
+  }
+}

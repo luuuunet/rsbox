@@ -1,0 +1,21 @@
+{
+  "log": { "level": "info", "timestamp": true },
+  "inbounds": [
+    {
+      "type": "rsq",
+      "tag": "rsq-in",
+      "listen": "::",
+      "listen_port": 443,
+      "users": [{ "password": "change-me" }],
+      "tls": {
+        "enabled": true,
+        "certificate_path": "/etc/rsbox/certs/fullchain.pem",
+        "key_path": "/etc/rsbox/certs/privkey.pem"
+      },
+      "obfs": { "enabled": true, "password": "change-me" },
+      "udp": true
+    }
+  ],
+  "outbounds": [{ "type": "direct", "tag": "direct" }],
+  "route": { "final": "direct" }
+}

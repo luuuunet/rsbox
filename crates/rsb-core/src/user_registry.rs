@@ -65,7 +65,7 @@ impl UserRegistry {
     fn ingest_inbound(&self, kind: &str, raw: &Value, inbound_tag: &str) {
         match kind {
             "vless" | "vmess" | "tuic" => self.ingest_uuid_users(raw, inbound_tag),
-            "trojan" | "anytls" | "hysteria2" | "shadowtls" => {
+            "trojan" | "anytls" | "hysteria2" | "rsq" | "shadowtls" => {
                 self.ingest_password_users(raw, inbound_tag)
             }
             "shadowsocks" => self.ingest_shadowsocks_users(raw, inbound_tag),

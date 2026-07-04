@@ -25,6 +25,7 @@ parking_lot.workspace = true
 prost.workspace = true
 prost-types.workspace = true
 quinn.workspace = true
+quinn-proto.workspace = true
 rand.workspace = true
 rsb-config.workspace = true
 rsb-constant.workspace = true

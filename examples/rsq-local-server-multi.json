@@ -1,0 +1,24 @@
+{
+  "log": { "level": "info", "timestamp": true },
+  "inbounds": [
+    {
+      "type": "rsq",
+      "tag": "rsq-in",
+      "listen": "127.0.0.1",
+      "listen_port": 18443,
+      "users": [
+        { "name": "alice", "password": "rsq-user-a" },
+        { "name": "bob", "password": "rsq-user-b" }
+      ],
+      "tls": {
+        "enabled": true,
+        "certificate_path": "certs/rsq-local/fullchain.pem",
+        "key_path": "certs/rsq-local/privkey.pem"
+      },
+      "obfs": { "enabled": true, "password": "rsq-local-obfs" },
+      "udp": true
+    }
+  ],
+  "outbounds": [{ "type": "direct", "tag": "direct" }],
+  "route": { "final": "direct" }
+}

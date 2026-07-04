@@ -865,6 +865,11 @@ pub async fn resolve_destination(
         return Ok(placeholder);
     };
     let port = placeholder.port();
+    // HTTP CONNECT uses 0.0.0.0:port; QUIC outbounds (RSQ/Hy2) carry the hostname.
+    // Skip local DNS here to avoid pollution before the remote side resolves.
+    if placeholder.ip().is_unspecified() {
+        return Ok(SocketAddr::new(placeholder.ip(), port));
+    }
     let addrs = dns.lookup(host).await?;
     let ip = addrs
         .into_iter()
@@ -920,6 +925,48 @@ impl UserRelaySession {
         domain: Option<String>,
     ) -> Result<Self> {
         let guard = connections.acquire_user(user_name, &limits)?;
+        Self::begin_tracked(
+            connections,
+            inbound_tag,
+            user_name,
+            limits,
+            destination,
+            domain,
+            Some(guard),
+        )
+    }
+
+    /// Track per-stream relay stats without consuming a panel connection slot.
+    /// Used by QUIC-multiplexed inbounds (RSQ) where one session carries many TCP streams.
+    pub fn begin_muxed(
+        connections: rsb_core::SharedConnectionManager,
+        inbound_tag: &str,
+        user_name: &str,
+        limits: rsb_core::UserLimits,
+        destination: Option<std::net::SocketAddr>,
+        domain: Option<String>,
+    ) -> Self {
+        Self::begin_tracked(
+            connections,
+            inbound_tag,
+            user_name,
+            limits,
+            destination,
+            domain,
+            None,
+        )
+        .expect("muxed relay tracking must not fail")
+    }
+
+    fn begin_tracked(
+        connections: rsb_core::SharedConnectionManager,
+        inbound_tag: &str,
+        user_name: &str,
+        limits: rsb_core::UserLimits,
+        destination: Option<std::net::SocketAddr>,
+        domain: Option<String>,
+        guard: Option<rsb_core::UserSessionGuard>,
+    ) -> Result<Self> {
         let limiter = connections.user_limiter(user_name, limits.speed_bps);
         let conn_id = connections.track(
             inbound_tag,
@@ -940,7 +987,7 @@ impl UserRelaySession {
                 limiter,
             }),
             conn_id,
-            _user_guard: guard,
+            _user_guard: guard.unwrap_or_else(rsb_core::UserSessionGuard::detached),
         })
     }
 }

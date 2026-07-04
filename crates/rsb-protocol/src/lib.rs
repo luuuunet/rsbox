@@ -28,6 +28,7 @@ pub mod reality_session;
 pub mod reality_sidecar;
 pub mod singbox_inbound_sidecar;
 pub mod registry;
+pub mod rsq;
 pub mod services;
 pub mod shadowsocks;
 pub mod shadowtls;
