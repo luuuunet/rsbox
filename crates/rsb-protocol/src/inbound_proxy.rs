@@ -1176,7 +1176,7 @@ pub async fn relay_proxy(a: &mut TcpStream, mut b: ProxyConn) -> Result<()> {
 
 /// Fully close an inbound client socket (avoids CLOSE_WAIT accumulation on Windows).
 async fn close_inbound_stream(stream: &mut TcpStream) {
-    let _ = stream.shutdown().await;
+    // Read peer FIN/data first; shutdown-before-drain leaves sockets in CLOSE_WAIT.
     let drain = async {
         let mut discard = [0u8; 4096];
         loop {
@@ -1186,7 +1186,51 @@ async fn close_inbound_stream(stream: &mut TcpStream) {
             }
         }
     };
-    let _ = tokio::time::timeout(INBOUND_DRAIN_TIMEOUT, drain).await;
+    let drained = tokio::time::timeout(INBOUND_DRAIN_TIMEOUT, drain).await;
+    let _ = stream.shutdown().await;
+    if drained.is_err() {
+        abort_inbound_socket(stream);
+    }
+}
+
+/// RST the socket when graceful drain times out (prevents CLOSE_WAIT pile-up).
+fn abort_inbound_socket(stream: &TcpStream) {
+    #[cfg(windows)]
+    {
+        use std::os::windows::io::AsRawSocket;
+        let raw = stream.as_raw_socket();
+        unsafe {
+            let mut linger = windows_sys::Win32::Networking::WinSock::LINGER {
+                l_onoff: 1,
+                l_linger: 0,
+            };
+            windows_sys::Win32::Networking::WinSock::setsockopt(
+                raw as usize,
+                windows_sys::Win32::Networking::WinSock::SOL_SOCKET,
+                windows_sys::Win32::Networking::WinSock::SO_LINGER,
+                &linger as *const _ as *const u8,
+                std::mem::size_of::<windows_sys::Win32::Networking::WinSock::LINGER>() as i32,
+            );
+        }
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::io::AsRawFd;
+        let fd = stream.as_raw_fd();
+        unsafe {
+            let linger = libc::linger {
+                l_onoff: 1,
+                l_linger: 0,
+            };
+            libc::setsockopt(
+                fd,
+                libc::SOL_SOCKET,
+                libc::SO_LINGER,
+                &linger as *const _ as *const libc::c_void,
+                std::mem::size_of::<libc::linger>() as libc::socklen_t,
+            );
+        }
+    }
 }
 
 async fn send_http_error(
@@ -1200,6 +1244,7 @@ async fn send_http_error(
         body.len()
     );
     let _ = stream.write_all(response.as_bytes()).await;
+    let _ = stream.flush().await;
     Ok(())
 }
 

@@ -115,15 +115,14 @@ async fn serve_connection(state: Arc<AppState>, connection: quinn::Connection) -
         .lookup_password(&auth_password)
         .map(|r| r.limits.clone())
         .unwrap_or_default();
-    let session_guard = Arc::new(
-        state
-            .connections
-            .acquire_user(&user_name, &limits)
-            .map_err(|err| {
-                tracing::warn!(user = %user_name, error = %err, "rsq session connection limit");
-                err
-            })?,
-    );
+    // One QUIC session = one panel connection slot (same as hysteria2).
+    let _session_guard = state
+        .connections
+        .acquire_user(&user_name, &limits)
+        .map_err(|err| {
+            tracing::warn!(user = %user_name, error = %err, "rsq session connection limit");
+            err
+        })?;
     let relay_ctx = relay::RsqRelayCtx {
         connections: state.connections.clone(),
         inbound_tag: state.inbound_tag.clone(),
@@ -132,7 +131,6 @@ async fn serve_connection(state: Arc<AppState>, connection: quinn::Connection) -
         client_rx_bps: downlink_bps,
         client_up_bps: uplink_bps,
         profile: client_caps.profile,
-        session_guard,
     };
     let udp_sessions: Arc<DashMap<u32, UdpSession>> = Arc::new(DashMap::new());
     let udp_reassembler = Arc::new(tokio::sync::Mutex::new(UdpReassembler::new()));
@@ -163,6 +161,7 @@ async fn serve_connection(state: Arc<AppState>, connection: quinn::Connection) -
 
     loop {
         tokio::select! {
+            _ = connection.closed() => break,
             incoming = connection.accept_bi() => {
                 match incoming {
                     Ok((send, recv)) => {

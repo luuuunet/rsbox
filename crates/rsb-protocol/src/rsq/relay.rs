@@ -25,8 +25,6 @@ pub struct RsqRelayCtx {
     /// Client-advertised upload capacity (uplink pacing).
     pub client_up_bps: u64,
     pub profile: TrafficProfile,
-    /// Held for the QUIC session lifetime — counts as one panel device connection.
-    pub(crate) session_guard: Arc<rsb_core::UserSessionGuard>,
 }
 
 impl RsqRelayCtx {
@@ -122,6 +120,7 @@ pub async fn handle_tcp_stream(
 
     let limits = ctx.user_limits();
     let user_name = ctx.user_name();
+    // QUIC session already holds the panel connection slot; streams are muxed only.
     let relay_session = crate::inbound_proxy::UserRelaySession::begin_muxed(
         ctx.connections.clone(),
         &ctx.inbound_tag,
@@ -130,7 +129,6 @@ pub async fn handle_tcp_stream(
         Some(addr),
         None,
     );
-    let _session_guard = ctx.session_guard.clone();
     let pacer_down = brutal_pacer_from_bps(ctx.downlink_target_bps(&limits));
     let pacer_up = brutal_pacer_from_bps(ctx.uplink_target_bps(&limits));
     let inner = Arc::new(RsqRelayInner {

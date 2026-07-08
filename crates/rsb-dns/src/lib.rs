@@ -128,7 +128,7 @@ impl DnsRouter {
                     },
                 };
                 if !addrs.is_empty() {
-                    return Ok(addrs);
+                    return Ok(apply_dns_strategy(addrs, current.options.as_ref()));
                 }
             }
             break;
@@ -137,7 +137,7 @@ impl DnsRouter {
         for resolved in lookup_host(format!("{host}:0")).await? {
             addrs.push(resolved.ip());
         }
-        Ok(addrs)
+        Ok(apply_dns_strategy(addrs, self.options.as_ref()))
     }
 
     pub async fn exchange(&self, query: &[u8]) -> Result<Vec<u8>> {
@@ -205,6 +205,28 @@ impl DnsRouter {
     pub fn options(&self) -> Option<&DnsOptions> {
         self.options.as_ref()
     }
+}
+
+fn apply_dns_strategy(mut addrs: Vec<IpAddr>, options: Option<&DnsOptions>) -> Vec<IpAddr> {
+    let strategy = options
+        .and_then(|o| o.strategy.as_deref())
+        .unwrap_or("prefer_ipv4");
+    match strategy {
+        "ipv4_only" | "prefer_ipv4" => {
+            let v4: Vec<_> = addrs.iter().copied().filter(|ip| ip.is_ipv4()).collect();
+            if !v4.is_empty() {
+                addrs = v4;
+            }
+        },
+        "ipv6_only" | "prefer_ipv6" => {
+            let v6: Vec<_> = addrs.iter().copied().filter(|ip| ip.is_ipv6()).collect();
+            if !v6.is_empty() {
+                addrs = v6;
+            }
+        },
+        _ => {},
+    }
+    addrs
 }
 
 fn parse_server(raw: &DnsServer, index: usize) -> Result<DnsServerEntry> {

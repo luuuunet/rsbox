@@ -398,19 +398,27 @@ impl RsqOutbound {
         Ok((demux, auth_ok.udp_enabled))
     }
 
+    async fn open_bi_with_timeout(
+        &self,
+        conn: &quinn::Connection,
+    ) -> Result<(quinn::SendStream, quinn::RecvStream)> {
+        match tokio::time::timeout(self.inner.stream_open_timeout, conn.open_bi()).await {
+            Ok(Ok(streams)) => Ok(streams),
+            Ok(Err(e)) => Err(e.into()),
+            Err(_) => anyhow::bail!("rsq: open stream timeout"),
+        }
+    }
+
     async fn dial_tcp_inner(
         &self,
         destination: SocketAddr,
         domain: Option<&str>,
     ) -> Result<ProxyConn, BoxError> {
         let session = self.get_connection().await?;
-        let (mut send, mut recv) = tokio::time::timeout(
-            self.inner.stream_open_timeout,
-            session.connection.open_bi(),
-        )
-        .await
-        .context("rsq open stream timeout")?
-        .context("open rsq stream")?;
+        let (mut send, mut recv) = self
+            .open_bi_with_timeout(&session.connection)
+            .await
+            .context("open rsq stream")?;
 
         let target = if let Some(domain) = domain {
             format!("{}:{}", domain, destination.port())
@@ -499,7 +507,12 @@ impl Outbound for RsqOutbound {
                     self.reset_session("dial retry").await;
                     return self.dial_tcp_inner(destination, domain).await;
                 }
-                Err(first)
+                tracing::debug!(
+                    tag = %self.inner.tag,
+                    error = %first,
+                    "rsq: stream dial retry on same session"
+                );
+                self.dial_tcp_inner(destination, domain).await
             }
         }
     }
@@ -557,7 +570,7 @@ async fn reset_session(shared: &RsqShared, reason: &str) {
         session
             .connection
             .close(0u32.into(), reason.as_bytes());
-        session.endpoint.close(0u32.into(), reason.as_bytes());
+        // Dropping session closes the Endpoint and releases the local UDP socket.
     }
 }
 
@@ -569,10 +582,7 @@ fn should_reset_rsq_session(err: &BoxError) -> bool {
         || msg.contains("connection lost")
         || msg.contains("connection closed")
         || msg.contains("application closed")
-        || msg.contains("stream closed")
-        || msg.contains("open rsq stream")
-        || msg.contains("rsq open stream timeout")
-        || msg.contains("timed out")
+        || msg.contains("timed out waiting for connection")
 }
 
 fn format_address(addr: SocketAddr) -> String {

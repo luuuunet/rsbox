@@ -134,9 +134,15 @@ async fn serve_connection(state: Arc<AppState>, connection: quinn::Connection) -
     let relay_ctx = relay::Hy2RelayCtx {
         connections: state.connections.clone(),
         inbound_tag: state.inbound_tag.clone(),
-        password: auth_password,
+        password: auth_password.clone(),
         server_down_mbps: state.down_mbps,
     };
+    let limits = relay_ctx.user_limits();
+    let user_name = relay_ctx.user_name();
+    let _session_guard = state
+        .connections
+        .acquire_user(&user_name, &limits)
+        .with_context(|| format!("hy2 session limit for user `{user_name}`"))?;
     let udp_sessions: Arc<DashMap<u32, UdpSession>> = Arc::new(DashMap::new());
     let udp_enabled = state.udp;
     loop {

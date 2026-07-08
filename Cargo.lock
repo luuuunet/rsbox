@@ -2928,7 +2928,7 @@ dependencies = [
 
 [[package]]
 name = "rsb-api"
-version = "0.1.4"
+version = "0.1.5"
 dependencies = [
  "anyhow",
  "axum 0.8.9",
@@ -2947,7 +2947,7 @@ dependencies = [
 
 [[package]]
 name = "rsb-config"
-version = "0.1.4"
+version = "0.1.5"
 dependencies = [
  "anyhow",
  "rsb-constant",
@@ -2957,11 +2957,11 @@ dependencies = [
 
 [[package]]
 name = "rsb-constant"
-version = "0.1.4"
+version = "0.1.5"
 
 [[package]]
 name = "rsb-core"
-version = "0.1.4"
+version = "0.1.5"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2985,7 +2985,7 @@ dependencies = [
 
 [[package]]
 name = "rsb-dns"
-version = "0.1.4"
+version = "0.1.5"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
@@ -3001,7 +3001,7 @@ dependencies = [
 
 [[package]]
 name = "rsb-libbox"
-version = "0.1.4"
+version = "0.1.5"
 dependencies = [
  "anyhow",
  "rsb-api",
@@ -3015,7 +3015,7 @@ dependencies = [
 
 [[package]]
 name = "rsb-protocol"
-version = "0.1.4"
+version = "0.1.5"
 dependencies = [
  "aes",
  "aes-gcm",
@@ -3086,7 +3086,7 @@ dependencies = [
 
 [[package]]
 name = "rsb-route"
-version = "0.1.4"
+version = "0.1.5"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -3102,7 +3102,7 @@ dependencies = [
 
 [[package]]
 name = "rsb-wireguard"
-version = "0.1.4"
+version = "0.1.5"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
@@ -3116,7 +3116,7 @@ dependencies = [
 
 [[package]]
 name = "rsbox"
-version = "0.1.4"
+version = "0.1.5"
 dependencies = [
  "anyhow",
  "clap",

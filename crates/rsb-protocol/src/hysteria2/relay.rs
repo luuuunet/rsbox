@@ -17,7 +17,7 @@ pub struct Hy2RelayCtx {
 }
 
 impl Hy2RelayCtx {
-    fn user_limits(&self) -> UserLimits {
+    pub(crate) fn user_limits(&self) -> UserLimits {
         self.connections
             .users()
             .lookup_password(&self.password)
@@ -25,7 +25,7 @@ impl Hy2RelayCtx {
             .unwrap_or_default()
     }
 
-    fn user_name(&self) -> String {
+    pub(crate) fn user_name(&self) -> String {
         self.connections
             .users()
             .lookup_password(&self.password)
@@ -68,14 +68,15 @@ pub async fn handle_tcp_stream(
 
     let limits = ctx.user_limits();
     let user_name = ctx.user_name();
-    let relay_session = crate::inbound_proxy::UserRelaySession::begin(
+    // One QUIC session already holds the panel connection slot; count streams only for traffic.
+    let relay_session = crate::inbound_proxy::UserRelaySession::begin_muxed(
         ctx.connections.clone(),
         &ctx.inbound_tag,
         &user_name,
         limits.clone(),
         Some(addr),
         None,
-    )?;
+    );
     let limiter = ctx.connections.user_limiter(&user_name, ctx.speed_bps(&limits));
 
     let (mut remote_read, mut remote_write) = remote.into_split();

@@ -358,4 +358,39 @@ impl Default for ConnectionManager {
     }
 }
 
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::user_registry::UserLimits;
+
+    #[test]
+    fn session_guard_releases_on_drop() {
+        let cm = ConnectionManager::new();
+        let limits = UserLimits {
+            max_connections: Some(2),
+            max_traffic_bytes: None,
+            speed_bps: None,
+        };
+        assert_eq!(cm.user_active_count("u1"), 0);
+        {
+            let _g1 = cm.acquire_user("u1", &limits).unwrap();
+            assert_eq!(cm.user_active_count("u1"), 1);
+            {
+                let _g2 = cm.acquire_user("u1", &limits).unwrap();
+                assert_eq!(cm.user_active_count("u1"), 2);
+                assert!(cm.acquire_user("u1", &limits).is_err());
+            }
+            assert_eq!(cm.user_active_count("u1"), 1);
+        }
+        assert_eq!(cm.user_active_count("u1"), 0);
+    }
+
+    #[test]
+    fn detached_guard_does_not_touch_count() {
+        let cm = ConnectionManager::new();
+        drop(UserSessionGuard::detached());
+        assert_eq!(cm.user_active_count("any"), 0);
+    }
+}
+
 pub type SharedConnectionManager = Arc<ConnectionManager>;
