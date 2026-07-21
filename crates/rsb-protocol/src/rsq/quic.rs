@@ -110,10 +110,11 @@ pub fn build_server_config(
             .context("idle timeout")?,
     ));
     transport.keep_alive_interval(Some(Duration::from_secs(10)));
-    // 服务端仍可用 Brutal（吞吐）；客户端默认关。
+    // Cap Brutal target: high advertised bw must not ignore loss on CN↔US paths.
+    let brutal_mbps = up_mbps.max(down_mbps).clamp(1, 200);
     apply_brutal_transport(
         &mut transport,
-        super::brutal::brutal_bps_from_pair(up_mbps, down_mbps),
+        super::brutal::brutal_bps_from_mbps(brutal_mbps),
     );
 
     let mut server_config = QuinnServerConfig::with_crypto(Arc::new(
