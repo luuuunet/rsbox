@@ -17,11 +17,14 @@ fn apply_brutal_transport(transport: &mut TransportConfig, brutal_bps: u64) {
     transport.send_window((DEFAULT_CONN_RECV_WINDOW as u64).into());
     transport.send_fairness(false);
     transport.enable_segmentation_offload(false);
-    #[cfg(windows)]
-    {
+}
+
+fn apply_client_mtu(transport: &mut TransportConfig, disable_mtu_discovery: bool) {
+    if disable_mtu_discovery {
         transport.mtu_discovery_config(None);
-        transport.initial_mtu(1200);
-        transport.min_mtu(1200);
+    } else {
+        // 对齐 Hy2：允许 PMTU（含 Windows），避免写死 1200。
+        transport.mtu_discovery_config(Some(quinn::MtuDiscoveryConfig::default()));
     }
 }
 
@@ -47,6 +50,8 @@ pub fn build_client_config(
     down_mbps: u32,
     idle_timeout: Option<Duration>,
     keep_alive_period: Option<Duration>,
+    use_brutal: bool,
+    disable_mtu_discovery: bool,
 ) -> Result<ClientConfig> {
     let mut tls = tls;
     tls.alpn_protocols = vec![ALPN_RSQ.to_vec()];
@@ -66,13 +71,12 @@ pub fn build_client_config(
     transport.receive_window(DEFAULT_CONN_RECV_WINDOW.into());
     transport.max_concurrent_bidi_streams(256u32.into());
     transport.max_concurrent_uni_streams(256u32.into());
-    apply_brutal_transport(
-        &mut transport,
-        super::brutal::brutal_bps_from_pair(up_mbps, down_mbps),
-    );
-    #[cfg(not(windows))]
-    {
-        transport.mtu_discovery_config(Some(quinn::MtuDiscoveryConfig::default()));
+    apply_client_mtu(&mut transport, disable_mtu_discovery);
+    if use_brutal {
+        apply_brutal_transport(
+            &mut transport,
+            super::brutal::brutal_bps_from_pair(up_mbps, down_mbps),
+        );
     }
 
     let mut client_cfg = ClientConfig::new(Arc::new(
@@ -106,6 +110,7 @@ pub fn build_server_config(
             .context("idle timeout")?,
     ));
     transport.keep_alive_interval(Some(Duration::from_secs(10)));
+    // 服务端仍可用 Brutal（吞吐）；客户端默认关。
     apply_brutal_transport(
         &mut transport,
         super::brutal::brutal_bps_from_pair(up_mbps, down_mbps),

@@ -24,6 +24,7 @@ const DEFAULT_PROBE_INTERVAL: Duration = Duration::from_secs(20);
 const PROBE_STREAM_TIMEOUT: Duration = Duration::from_secs(4);
 const DEFAULT_STREAM_OPEN_TIMEOUT: Duration = Duration::from_secs(15);
 const DEFAULT_MAX_SESSION_AGE: Duration = Duration::from_secs(30 * 60);
+const TCP_OPEN_REPLY_TIMEOUT: Duration = Duration::from_secs(10);
 
 struct RsqSession {
     endpoint: Endpoint,
@@ -58,6 +59,9 @@ struct RsqOutboundInner {
     probe_interval: Duration,
     stream_open_timeout: Duration,
     max_session_age: Duration,
+    /// 客户端 Brutal CC / BrutalWriter；默认 false（对齐 Hy2，优先稳定）。
+    use_brutal: bool,
+    disable_mtu_discovery: bool,
     shared: Arc<RsqShared>,
 }
 
@@ -128,6 +132,16 @@ impl RsqOutbound {
                 raw.get("max_session_age").and_then(|v| v.as_str()),
             )
             .unwrap_or(DEFAULT_MAX_SESSION_AGE),
+            // 默认关 Brutal，显式 brutal/use_brutal=true 才开。
+            use_brutal: raw
+                .get("brutal")
+                .and_then(|v| v.as_bool())
+                .or_else(|| raw.get("use_brutal").and_then(|v| v.as_bool()))
+                .unwrap_or(false),
+            disable_mtu_discovery: raw
+                .get("disable_mtu_discovery")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(false),
             shared: Arc::new(RsqShared {
                 session: tokio::sync::Mutex::new(None),
                 connect_inflight: AtomicBool::new(false),
@@ -257,9 +271,8 @@ impl RsqOutbound {
                     continue;
                 };
 
+                // 对齐 Hy2：probe 只观察不干预；open_bi 高负载下易误超时。
                 if !probe_connection(&conn).await {
-                    // Keep session on transient probe failure (matches hysteria2).
-                    // open_bi can time out under load; resetting here kills in-flight dials.
                     tracing::debug!(
                         tag = %tag,
                         conn_id,
@@ -308,6 +321,8 @@ impl RsqOutbound {
             self.inner.down_mbps,
             Some(self.inner.idle_timeout),
             Some(self.inner.keep_alive_period),
+            self.inner.use_brutal,
+            self.inner.disable_mtu_discovery,
         )?;
 
         let addr = tokio::net::lookup_host(format!("{}:{}", self.inner.server, self.inner.port))
@@ -440,11 +455,15 @@ impl RsqOutbound {
                     }
                 }
             }
-            let n = recv
-                .read(&mut chunk)
-                .await
-                .context("read tcp reply")?
-                .ok_or_else(|| anyhow::anyhow!("rsq: stream closed before tcp reply"))?;
+            let n = match tokio::time::timeout(TCP_OPEN_REPLY_TIMEOUT, recv.read(&mut chunk)).await
+            {
+                Ok(Ok(Some(n))) => n,
+                Ok(Ok(None)) => {
+                    anyhow::bail!("rsq: stream closed before tcp reply");
+                }
+                Ok(Err(e)) => return Err(e.into()),
+                Err(_) => anyhow::bail!("rsq: read tcp reply timeout"),
+            };
             buf.extend_from_slice(&chunk[..n]);
             if buf.len() > 8192 {
                 anyhow::bail!("rsq: tcp reply too large");
@@ -457,9 +476,14 @@ impl RsqOutbound {
         } else {
             Box::new(stream::PrefixedRecvStream::new(recv, prefix))
         };
-        let pacer = bandwidth::brutal_pacer_from_mbps(self.inner.up_mbps);
-        let writer = bandwidth::BrutalWriter::new(send, pacer);
-        Ok(Box::new(SplitProxy::new(reader, writer)))
+        // 默认直写（对齐 Hy2）；仅 use_brutal 时套 BrutalWriter。
+        if self.inner.use_brutal {
+            let pacer = bandwidth::brutal_pacer_from_mbps(self.inner.up_mbps);
+            let writer = bandwidth::BrutalWriter::new(send, pacer);
+            Ok(Box::new(SplitProxy::new(reader, writer)))
+        } else {
+            Ok(Box::new(SplitProxy::new(reader, send)))
+        }
     }
 }
 

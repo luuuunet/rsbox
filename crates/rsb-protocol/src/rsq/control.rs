@@ -7,7 +7,13 @@ use bytes::BytesMut;
 use bytes::Buf;
 use quinn::{Connection, RecvStream, SendStream};
 use std::sync::Arc;
+use std::time::Duration;
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
+
+/// 与 PING 间隔（~20s）对齐，避免一次抖动误杀。
+const PONG_TIMEOUT: Duration = Duration::from_secs(30);
+/// 连续 PONG 超时达到阈值才关闭整条连接。
+const PONG_FAIL_CLOSE_THRESHOLD: u32 = 3;
 
 pub fn spawn_client_ping(
     connection: Arc<Connection>,
@@ -45,29 +51,64 @@ async fn client_ping_loop(
     profile: TrafficProfile,
 ) -> Result<()> {
     let base = profile.keepalive_jitter_base_secs();
+    let mut consecutive_pong_timeouts: u32 = 0;
     loop {
         tokio::time::sleep(traffic::jitter_duration(base)).await;
         let ping = protocol::encode_frame(FRAME_PING, 0, b"", protocol::random_pad_len(8, 32));
         send.write_all(&ping).await?;
-        let mut buf = BytesMut::new();
-        let mut chunk = [0u8; 512];
-        'pong_wait: loop {
-            while let Some(frame) = protocol::try_decode_frame(&buf)? {
-                let total = protocol::frame_consumed_len(&buf)?;
-                if frame.frame_type == FRAME_PONG {
-                    buf.advance(total);
-                    break 'pong_wait;
+        match wait_for_pong(recv).await {
+            Ok(()) => {
+                consecutive_pong_timeouts = 0;
+            }
+            Err(WaitPongError::Timeout) => {
+                consecutive_pong_timeouts = consecutive_pong_timeouts.saturating_add(1);
+                tracing::debug!(
+                    consecutive_pong_timeouts,
+                    threshold = PONG_FAIL_CLOSE_THRESHOLD,
+                    "rsq pong timeout (soft retry)"
+                );
+                if consecutive_pong_timeouts >= PONG_FAIL_CLOSE_THRESHOLD {
+                    anyhow::bail!("rsq pong timeout x{consecutive_pong_timeouts}");
                 }
+                // soft retry：不立刻 close，下一轮再 PING。
+            }
+            Err(WaitPongError::Other(e)) => return Err(e),
+        }
+    }
+}
+
+enum WaitPongError {
+    Timeout,
+    Other(anyhow::Error),
+}
+
+async fn wait_for_pong(recv: &mut RecvStream) -> Result<(), WaitPongError> {
+    let mut buf = BytesMut::new();
+    let mut chunk = [0u8; 512];
+    loop {
+        while let Some(frame) = protocol::try_decode_frame(&buf).map_err(WaitPongError::Other)? {
+            let total = protocol::frame_consumed_len(&buf).map_err(WaitPongError::Other)?;
+            if frame.frame_type == FRAME_PONG {
                 buf.advance(total);
+                return Ok(());
             }
-            let n = match recv.read(&mut chunk).await? {
-                Some(n) => n,
-                None => return Ok(()),
-            };
-            buf.extend_from_slice(&chunk[..n]);
-            if buf.len() > 4096 {
-                anyhow::bail!("rsq control response too large");
+            buf.advance(total);
+        }
+        let n = match tokio::time::timeout(PONG_TIMEOUT, recv.read(&mut chunk)).await {
+            Ok(Ok(Some(n))) => n,
+            Ok(Ok(None)) => {
+                return Err(WaitPongError::Other(anyhow::anyhow!(
+                    "rsq control stream closed"
+                )));
             }
+            Ok(Err(e)) => return Err(WaitPongError::Other(e.into())),
+            Err(_) => return Err(WaitPongError::Timeout),
+        };
+        buf.extend_from_slice(&chunk[..n]);
+        if buf.len() > 4096 {
+            return Err(WaitPongError::Other(anyhow::anyhow!(
+                "rsq control response too large"
+            )));
         }
     }
 }
