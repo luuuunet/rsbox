@@ -102,17 +102,25 @@ pub fn detect_default_interface() -> Result<String> {
 }
 
 pub fn route_add(cidr: &str, iface: &str) -> Result<()> {
+    route_change(cidr, iface, libc::RTM_ADD as u8)
+}
+
+pub fn route_delete(cidr: &str, iface: &str) -> Result<()> {
+    route_change(cidr, iface, libc::RTM_DELETE as u8)
+}
+
+fn route_change(cidr: &str, iface: &str, rtm_type: u8) -> Result<()> {
     let (dest, prefix) = parse_cidr(cidr)?;
     let ifindex = if_nametoindex(iface)?;
     let fd = unsafe { libc::socket(libc::AF_ROUTE, libc::SOCK_RAW, 0) };
     if fd < 0 {
         anyhow::bail!("routing socket failed");
     }
-    let msg = RouteMsg::add_request(dest, prefix, ifindex);
+    let msg = RouteMsg::change_request(dest, prefix, ifindex, rtm_type);
     let ret = unsafe { libc::write(fd, msg.as_ptr() as *const _, msg.len()) };
     unsafe { libc::close(fd) };
     if ret <= 0 {
-        anyhow::bail!("route add failed for {cidr}");
+        anyhow::bail!("route change failed for {cidr}");
     }
     Ok(())
 }
@@ -245,12 +253,16 @@ impl RouteMsg {
     }
 
     fn add_request(dest: IpAddr, prefix: u8, ifindex: u32) -> Self {
+        Self::change_request(dest, prefix, ifindex, libc::RTM_ADD as u8)
+    }
+
+    fn change_request(dest: IpAddr, prefix: u8, ifindex: u32, rtm_type: u8) -> Self {
         let mut bytes = vec![0u8; RTM_HDRLEN + 128];
         let hdr = bytes.as_mut_ptr() as *mut libc::rt_msghdr;
         unsafe {
             (*hdr).rtm_msglen = bytes.len() as u16;
             (*hdr).rtm_version = libc::RTM_VERSION as u8;
-            (*hdr).rtm_type = libc::RTM_ADD as u8;
+            (*hdr).rtm_type = rtm_type;
             (*hdr).rtm_flags = libc::RTF_UP | libc::RTF_STATIC;
             (*hdr).rtm_addrs = (libc::RTA_DST | libc::RTA_NETMASK | libc::RTA_IFP) as i32;
             (*hdr).rtm_pid = libc::getpid();

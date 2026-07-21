@@ -47,9 +47,17 @@ pub fn detect_default_interface() -> Result<String> {
 }
 
 pub fn route_add(cidr: &str, iface: &str) -> Result<()> {
+    route_change(cidr, iface, libc::RTM_NEWROUTE as u16, NLM_F_REPLACE | NLM_F_CREATE)
+}
+
+pub fn route_delete(cidr: &str, iface: &str) -> Result<()> {
+    route_change(cidr, iface, libc::RTM_DELROUTE as u16, 0)
+}
+
+fn route_change(cidr: &str, iface: &str, kind: u16, flags: u16) -> Result<()> {
     let (dest, prefix) = parse_cidr(cidr)?;
     let ifindex = if_nametoindex(iface)?;
-    let mut req = RtRequest::new(libc::RTM_NEWROUTE as u16, NLM_F_REPLACE | NLM_F_CREATE);
+    let mut req = RtRequest::new(kind, flags);
     req.set_family(match dest {
         IpAddr::V4(_) => libc::AF_INET as u8,
         IpAddr::V6(_) => libc::AF_INET6 as u8,

@@ -50,7 +50,23 @@ mod route {
             Ok(())
         }
     }
+
+    pub fn route_delete(cidr: &str, iface: &str) -> Result<()> {
+        #[cfg(target_os = "linux")]
+        return super::linux::route_delete(cidr, iface);
+        #[cfg(windows)]
+        return super::windows::route_delete(cidr, iface);
+        #[cfg(target_os = "macos")]
+        return super::macos::route_delete(cidr, iface);
+        #[cfg(not(any(target_os = "linux", windows, target_os = "macos")))]
+        {
+            let _ = (cidr, iface);
+            Ok(())
+        }
+    }
 }
+
+pub use route::{route_add, route_delete};
 
 pub fn detect_default_interface() -> anyhow::Result<String> {
     #[cfg(target_os = "linux")]

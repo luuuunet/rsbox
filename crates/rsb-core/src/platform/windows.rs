@@ -3,9 +3,9 @@ use std::ffi::OsString;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr};
 use std::os::windows::ffi::OsStringExt;
 use windows_sys::Win32::NetworkManagement::IpHelper::{
-    ConvertInterfaceLuidToNameW, CreateIpForwardEntry2, FreeMibTable, GetAdaptersAddresses,
-    GetIpForwardTable2, InitializeIpForwardEntry, GAA_FLAG_SKIP_ANYCAST, GAA_FLAG_SKIP_DNS_SERVER,
-    GAA_FLAG_SKIP_MULTICAST, MIB_IPFORWARD_ROW2, MIB_IPFORWARD_TABLE2,
+    ConvertInterfaceLuidToNameW, CreateIpForwardEntry2, DeleteIpForwardEntry2, FreeMibTable,
+    GetAdaptersAddresses, GetIpForwardTable2, InitializeIpForwardEntry, GAA_FLAG_SKIP_ANYCAST,
+    GAA_FLAG_SKIP_DNS_SERVER, GAA_FLAG_SKIP_MULTICAST, MIB_IPFORWARD_ROW2, MIB_IPFORWARD_TABLE2,
 };
 use windows_sys::Win32::Networking::WinSock::{AF_INET, AF_INET6, AF_UNSPEC};
 
@@ -49,6 +49,28 @@ pub fn detect_default_interface() -> Result<String> {
 }
 
 pub fn route_add(cidr: &str, iface: &str) -> Result<()> {
+    let row = build_forward_row(cidr, iface)?;
+    unsafe {
+        let err = CreateIpForwardEntry2(&row);
+        if err != 0 && err != windows_sys::Win32::Foundation::ERROR_OBJECT_ALREADY_EXISTS {
+            anyhow::bail!("CreateIpForwardEntry2 failed for {cidr} (error {err})");
+        }
+    }
+    Ok(())
+}
+
+pub fn route_delete(cidr: &str, iface: &str) -> Result<()> {
+    let row = build_forward_row(cidr, iface)?;
+    unsafe {
+        let err = DeleteIpForwardEntry2(&row);
+        if err != 0 && err != windows_sys::Win32::Foundation::ERROR_NOT_FOUND {
+            anyhow::bail!("DeleteIpForwardEntry2 failed for {cidr} (error {err})");
+        }
+    }
+    Ok(())
+}
+
+fn build_forward_row(cidr: &str, iface: &str) -> Result<MIB_IPFORWARD_ROW2> {
     let (dest, prefix) = parse_cidr(cidr)?;
     let ifindex = interface_index(iface)?;
     unsafe {
@@ -70,11 +92,8 @@ pub fn route_add(cidr: &str, iface: &str) -> Result<()> {
                 row.DestinationPrefix.Prefix.Ipv6.sin6_addr = in6_addr(v6);
             },
         }
-        if CreateIpForwardEntry2(&row) != 0 {
-            anyhow::bail!("CreateIpForwardEntry2 failed for {cidr}");
-        }
+        Ok(row)
     }
-    Ok(())
 }
 
 fn interface_index(name: &str) -> Result<u32> {

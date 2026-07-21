@@ -15,10 +15,13 @@ pub struct TunInbound {
     name: String,
     mtu: u16,
     address: String,
+    auto_route: bool,
+    strict_route: bool,
     dialer: Arc<Dialer>,
     dns: Arc<DnsRouter>,
     shutdown: tokio::sync::watch::Sender<bool>,
     handle: tokio::sync::Mutex<Option<tokio::task::JoinHandle<()>>>,
+    routes: Arc<tokio::sync::Mutex<Vec<String>>>,
 }
 
 impl TunInbound {
@@ -32,18 +35,79 @@ impl TunInbound {
                 .unwrap_or("tun0")
                 .to_string(),
             mtu: raw.get("mtu").and_then(|v| v.as_u64()).unwrap_or(1500) as u16,
-            address: raw
-                .get("address")
-                .and_then(|v| v.as_array())
-                .and_then(|a| a.first())
-                .and_then(|v| v.as_str())
-                .unwrap_or("172.19.0.1/30")
-                .to_string(),
+            address: parse_tun_address(&raw),
+            auto_route: raw
+                .get("auto_route")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(true),
+            strict_route: raw
+                .get("strict_route")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(true),
             dialer,
             dns,
             shutdown,
             handle: tokio::sync::Mutex::new(None),
+            routes: Arc::new(tokio::sync::Mutex::new(Vec::new())),
         })
+    }
+}
+
+fn parse_tun_address(raw: &Value) -> String {
+    if let Some(arr) = raw.get("address").and_then(|v| v.as_array()) {
+        if let Some(first) = arr.first().and_then(|v| v.as_str()) {
+            return first.to_string();
+        }
+    }
+    raw.get("inet4_address")
+        .and_then(|v| v.as_str())
+        .unwrap_or("172.19.0.1/30")
+        .to_string()
+}
+
+fn tun_route_targets(strict_route: bool) -> &'static [&'static str] {
+    if strict_route {
+        &["0.0.0.0/1", "128.0.0.0/1"]
+    } else {
+        &["0.0.0.0/0"]
+    }
+}
+
+async fn install_tun_routes(name: &str, strict_route: bool) -> Result<Vec<String>> {
+    let targets = tun_route_targets(strict_route);
+    let mut installed = Vec::with_capacity(targets.len());
+    for cidr in targets {
+        let mut last_err = None;
+        for attempt in 0..10 {
+            match rsb_core::route_add(cidr, name) {
+                Ok(()) => {
+                    installed.push((*cidr).to_string());
+                    last_err = None;
+                    break;
+                }
+                Err(err) => {
+                    last_err = Some(err);
+                    if attempt < 9 {
+                        tokio::time::sleep(std::time::Duration::from_millis(200)).await;
+                    }
+                }
+            }
+        }
+        if let Some(err) = last_err {
+            for cidr in &installed {
+                let _ = rsb_core::route_delete(cidr, name);
+            }
+            return Err(err.context(format!("install route {cidr} on {name}")));
+        }
+    }
+    Ok(installed)
+}
+
+async fn remove_tun_routes(name: &str, routes: Vec<String>) {
+    for cidr in routes {
+        if let Err(err) = rsb_core::route_delete(&cidr, name) {
+            tracing::debug!(%cidr, %name, error = %err, "tun route cleanup skipped");
+        }
     }
 }
 
@@ -67,6 +131,19 @@ impl Inbound for TunInbound {
             cfg.destination(parse_tun_gateway(&self.address));
         }
         let dev = tun::create_as_async(&cfg).map_err(|e| anyhow::anyhow!("tun create: {e}"))?;
+        if self.auto_route {
+            let routes = install_tun_routes(&self.name, self.strict_route)
+                .await
+                .map_err(|e| anyhow::anyhow!("tun routes: {e}"))?;
+            tracing::info!(
+                tag = %self.tag,
+                name = %self.name,
+                routes = ?routes,
+                strict_route = self.strict_route,
+                "tun routes installed"
+            );
+            *self.routes.lock().await = routes;
+        }
         let mut stack_cfg = IpStackConfig::default();
         stack_cfg.mtu(self.mtu).context("ipstack mtu")?;
         let mut ip_stack = IpStack::new(stack_cfg, dev);
@@ -102,6 +179,11 @@ impl Inbound for TunInbound {
         let _ = self.shutdown.send(true);
         if let Some(h) = self.handle.lock().await.take() {
             h.abort();
+        }
+        let routes = self.routes.lock().await.drain(..).collect::<Vec<_>>();
+        if !routes.is_empty() {
+            remove_tun_routes(&self.name, routes).await;
+            tracing::info!(tag = %self.tag, name = %self.name, "tun routes removed");
         }
         Ok(())
     }

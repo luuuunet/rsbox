@@ -19,7 +19,7 @@ pub use rate_limit::RateLimiter;
 pub use subscription::{merge_outbound_providers, Subscription};
 pub use user_registry::{trojan_password_hash, UserLimits, UserRecord, UserRegistry};
 pub use interface::{detect_default_interface, is_private_ip, tcp_connect_via, udp_bind_via};
-pub use platform::install_routes;
+pub use platform::{install_routes, route_add, route_delete};
 pub use process::{lookup_process_for_tcp_stream, lookup_process_for_tuple, ProcessInfo};
 pub use proxy_stream::{
     proxy_box, tcp_stream, tracked_stream, ProxyConn, ProxyStream, SplitProxy, TrackedStream,
