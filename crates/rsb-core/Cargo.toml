@@ -26,6 +26,7 @@ uuid.workspace = true
 libc.workspace = true
 
 [target.'cfg(windows)'.dependencies]
+winreg = "0.55"
 windows-sys = { workspace = true, features = [
     "Win32_Foundation",
     "Win32_NetworkManagement_IpHelper",

@@ -2928,7 +2928,7 @@ dependencies = [
 
 [[package]]
 name = "rsb-api"
-version = "0.1.12"
+version = "0.1.14"
 dependencies = [
  "anyhow",
  "axum 0.8.9",
@@ -2947,7 +2947,7 @@ dependencies = [
 
 [[package]]
 name = "rsb-config"
-version = "0.1.12"
+version = "0.1.14"
 dependencies = [
  "anyhow",
  "rsb-constant",
@@ -2957,11 +2957,11 @@ dependencies = [
 
 [[package]]
 name = "rsb-constant"
-version = "0.1.12"
+version = "0.1.14"
 
 [[package]]
 name = "rsb-core"
-version = "0.1.12"
+version = "0.1.14"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -2981,11 +2981,12 @@ dependencies = [
  "url",
  "uuid",
  "windows-sys 0.59.0",
+ "winreg",
 ]
 
 [[package]]
 name = "rsb-dns"
-version = "0.1.12"
+version = "0.1.14"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
@@ -3001,12 +3002,13 @@ dependencies = [
 
 [[package]]
 name = "rsb-libbox"
-version = "0.1.12"
+version = "0.1.14"
 dependencies = [
  "anyhow",
  "rsb-api",
  "rsb-config",
  "rsb-constant",
+ "rsb-core",
  "rsb-protocol",
  "tokio",
  "tracing",
@@ -3015,7 +3017,7 @@ dependencies = [
 
 [[package]]
 name = "rsb-protocol"
-version = "0.1.12"
+version = "0.1.14"
 dependencies = [
  "aes",
  "aes-gcm",
@@ -3086,7 +3088,7 @@ dependencies = [
 
 [[package]]
 name = "rsb-route"
-version = "0.1.12"
+version = "0.1.14"
 dependencies = [
  "anyhow",
  "async-trait",
@@ -3102,7 +3104,7 @@ dependencies = [
 
 [[package]]
 name = "rsb-wireguard"
-version = "0.1.12"
+version = "0.1.14"
 dependencies = [
  "anyhow",
  "base64 0.22.1",
@@ -3116,7 +3118,7 @@ dependencies = [
 
 [[package]]
 name = "rsbox"
-version = "0.1.12"
+version = "0.1.14"
 dependencies = [
  "anyhow",
  "clap",
@@ -4658,6 +4660,16 @@ name = "windows_x86_64_msvc"
 version = "0.53.1"
 source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "d6bbff5f0aada427a1e5a6da5f1f98158182f26556f345ac9e04d36d0ebed650"
+
+[[package]]
+name = "winreg"
+version = "0.55.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "cb5a765337c50e9ec252c2069be9bf91c7df47afb103b642ba3a53bf8101be97"
+dependencies = [
+ "cfg-if",
+ "windows-sys 0.59.0",
+]
 
 [[package]]
 name = "wintun-bindings"

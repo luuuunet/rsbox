@@ -1,33 +1,40 @@
-//! Force browsers off HTTP/3 under system proxy by blocking UDP/443 at the OS layer.
+//! Force browsers off HTTP/3 under system proxy **without Administrator**.
 //!
-//! Windows Firewall evaluates outbound **block before allow**, so a global UDP/443 block
-//! would also drop node tunnels that listen on 443. Strategy:
-//! 1. Always block UDP/443 for common browser executables (Chrome/Edge/Firefox/…).
-//! 2. If no UDP tunnel outbound uses remote port 443, also install a global UDP/443 block.
-//! 3. Otherwise skip the global block and rely on browser rules (rsbox.exe stays unrestricted).
+//! System HTTP proxy cannot carry QUIC (UDP/443). Blocking that with Windows Firewall
+//! needs elevation — pointless vs TUN. Instead we set per-user Chromium policies
+//! (`QuicAllowed=0` under HKCU), which Chrome/Edge/Brave honor without admin.
+//!
+//! Note: browsers typically apply policy on next process start; log asks user to
+//! restart the browser once after connect.
 
 use anyhow::{Context, Result};
 use std::net::IpAddr;
-use std::process::Command;
 
-const RULE_PREFIX: &str = "rsbox-block-quic";
-
-/// RAII guard: removes firewall rules on drop.
+/// RAII guard: restores previous HKCU QuicAllowed policies on drop.
 pub struct QuicBlockGuard {
-    installed: bool,
+    #[cfg(windows)]
+    restores: Vec<PolicyRestore>,
+    #[cfg(not(windows))]
+    _unused: (),
+}
+
+#[cfg(windows)]
+struct PolicyRestore {
+    subkey: &'static str,
+    /// Previous DWORD if the value existed before we wrote; `None` means delete on restore.
+    previous: Option<u32>,
 }
 
 impl QuicBlockGuard {
-    /// Install QUIC blocks. On non-Windows this is a no-op success.
-    /// Failures (e.g. not admin) return `Ok(None)` after logging — never abort startup.
+    /// Install QUIC-disable policies. Failures return `None` after logging — never abort startup.
     pub fn try_install(allow_udp: &[(String, u16)]) -> Option<Self> {
-        match install(allow_udp) {
-            Ok(true) => Some(Self { installed: true }),
-            Ok(false) => None,
+        let _ = allow_udp; // allowlist kept for API stability / future WFP use
+        match install() {
+            Ok(guard) => Some(guard),
             Err(err) => {
                 tracing::warn!(
                     error = %err,
-                    "block_quic: failed to install firewall rules (need Administrator?). Browser HTTP/3 may bypass system proxy"
+                    "block_quic: failed to set browser QuicAllowed=0 under HKCU"
                 );
                 None
             }
@@ -37,200 +44,136 @@ impl QuicBlockGuard {
 
 impl Drop for QuicBlockGuard {
     fn drop(&mut self) {
-        if self.installed {
-            if let Err(err) = remove_all_rules() {
-                tracing::warn!(error = %err, "block_quic: failed to remove firewall rules");
-            } else {
-                tracing::info!("block_quic: firewall rules removed");
+        #[cfg(windows)]
+        {
+            for item in self.restores.drain(..) {
+                if let Err(err) = restore_policy(&item) {
+                    tracing::warn!(
+                        subkey = item.subkey,
+                        error = %err,
+                        "block_quic: failed to restore QuicAllowed"
+                    );
+                }
             }
+            // Best-effort cleanup of leftover firewall rules from older rsbox builds.
+            let _ = remove_legacy_firewall_rules();
+            tracing::info!("block_quic: restored browser QuicAllowed policies");
         }
     }
 }
 
-fn install(allow_udp: &[(String, u16)]) -> Result<bool> {
+fn install() -> Result<QuicBlockGuard> {
     #[cfg(windows)]
     {
-        remove_all_rules().ok();
-        let mut any = false;
-        let mut last_err: Option<anyhow::Error> = None;
-        for (i, program) in browser_programs().into_iter().enumerate() {
-            let name = format!("{RULE_PREFIX}-browser-{i}");
-            match add_block_udp443_program(&name, &program) {
-                Ok(()) => {
-                    any = true;
-                    tracing::info!(%program, rule = %name, "block_quic: browser UDP/443 blocked");
-                }
-                Err(err) => {
-                    tracing::debug!(%program, error = %err, "block_quic: skip browser rule");
-                    last_err = Some(err);
-                }
-            }
+        let _ = remove_legacy_firewall_rules();
+        let mut restores = Vec::new();
+        for subkey in POLICY_SUBKEYS {
+            let previous = read_quic_allowed(subkey)?;
+            set_quic_allowed(subkey, 0)?;
+            restores.push(PolicyRestore { subkey, previous });
+            tracing::info!(%subkey, "block_quic: QuicAllowed=0 (HKCU, no admin)");
         }
-        let has_udp443_tunnel = allow_udp.iter().any(|(_, p)| *p == 443);
-        if has_udp443_tunnel {
-            tracing::info!(
-                "block_quic: UDP tunnel on :443 detected — skipping global UDP/443 block (browser rules only)"
-            );
-        } else {
-            match add_block_udp443_global(&format!("{RULE_PREFIX}-global")) {
-                Ok(()) => {
-                    any = true;
-                    tracing::info!("block_quic: global outbound UDP/443 blocked");
-                }
-                Err(err) => {
-                    tracing::debug!(error = %err, "block_quic: global rule failed");
-                    last_err = Some(err);
-                }
-            }
+        if restores.is_empty() {
+            anyhow::bail!("no browser policy keys written");
         }
-        for (host, port) in allow_udp {
-            tracing::debug!(%host, %port, "block_quic: udp tunnel allowlisted (not blocked)");
-        }
-        if !any {
-            if let Some(err) = last_err {
-                return Err(err).context("no block_quic firewall rules installed");
-            }
-            return Ok(false);
-        }
-        Ok(true)
+        tracing::warn!(
+            "block_quic: restart Chrome/Edge/Brave once so QuicAllowed policy takes effect"
+        );
+        Ok(QuicBlockGuard { restores })
     }
     #[cfg(not(windows))]
     {
-        let _ = allow_udp;
         tracing::debug!("block_quic: unsupported on this platform (no-op)");
-        Ok(false)
+        anyhow::bail!("block_quic unsupported on this platform")
     }
-}
-
-fn remove_all_rules() -> Result<()> {
-    #[cfg(windows)]
-    {
-        // netsh cannot glob-delete; enumerate via PowerShell then delete by name.
-        let list = Command::new("powershell")
-            .args([
-                "-NoProfile",
-                "-Command",
-                &format!(
-                    "Get-NetFirewallRule -ErrorAction SilentlyContinue | Where-Object {{ $_.DisplayName -like '{RULE_PREFIX}*' }} | ForEach-Object {{ $_.DisplayName }}"
-                ),
-            ])
-            .output()
-            .context("list firewall rules")?;
-        let text = String::from_utf8_lossy(&list.stdout);
-        for name in text.lines().map(str::trim).filter(|s| !s.is_empty()) {
-            let _ = Command::new("netsh")
-                .args(["advfirewall", "firewall", "delete", "rule", &format!("name={name}")])
-                .output();
-        }
-        // Also try fixed names in case Get-NetFirewallRule unavailable.
-        for suffix in ["global", "browser-0", "browser-1", "browser-2", "browser-3", "browser-4", "browser-5", "browser-6", "browser-7"] {
-            let _ = Command::new("netsh")
-                .args([
-                    "advfirewall",
-                    "firewall",
-                    "delete",
-                    "rule",
-                    &format!("name={RULE_PREFIX}-{suffix}"),
-                ])
-                .output();
-        }
-        Ok(())
-    }
-    #[cfg(not(windows))]
-    Ok(())
 }
 
 #[cfg(windows)]
-fn add_block_udp443_global(name: &str) -> Result<()> {
-    let out = Command::new("netsh")
-        .args([
-            "advfirewall",
-            "firewall",
-            "add",
-            "rule",
-            &format!("name={name}"),
-            "dir=out",
-            "action=block",
-            "protocol=UDP",
-            "remoteport=443",
-            "enable=yes",
-            "profile=any",
-        ])
-        .output()
-        .context("netsh add global block")?;
-    if !out.status.success() {
-        anyhow::bail!(
-            "netsh add failed: {}",
-            String::from_utf8_lossy(&out.stderr).trim()
-        );
-    }
-    Ok(())
-}
+const POLICY_SUBKEYS: &[&str] = &[
+    r"Software\Policies\Google\Chrome",
+    r"Software\Policies\Microsoft\Edge",
+    r"Software\Policies\BraveSoftware\Brave",
+    r"Software\Policies\Chromium",
+];
 
 #[cfg(windows)]
-fn add_block_udp443_program(name: &str, program: &str) -> Result<()> {
-    let out = Command::new("netsh")
-        .args([
-            "advfirewall",
-            "firewall",
-            "add",
-            "rule",
-            &format!("name={name}"),
-            "dir=out",
-            "action=block",
-            "protocol=UDP",
-            "remoteport=443",
-            &format!("program={program}"),
-            "enable=yes",
-            "profile=any",
-        ])
-        .output()
-        .context("netsh add browser block")?;
-    if !out.status.success() {
-        anyhow::bail!(
-            "netsh add failed for {program}: {}",
-            String::from_utf8_lossy(&out.stderr).trim()
-        );
-    }
-    Ok(())
-}
+const VALUE_NAME: &str = "QuicAllowed";
 
 #[cfg(windows)]
-fn browser_programs() -> Vec<String> {
-    use std::path::PathBuf;
-    let mut paths = Vec::new();
-    let mut push_if = |p: PathBuf| {
-        if p.is_file() {
-            paths.push(p.to_string_lossy().to_string());
-        }
+fn read_quic_allowed(subkey: &str) -> Result<Option<u32>> {
+    use winreg::enums::*;
+    use winreg::RegKey;
+    let hkcu = RegKey::predef(HKEY_CURRENT_USER);
+    let key = match hkcu.open_subkey(subkey) {
+        Ok(k) => k,
+        Err(_) => return Ok(None),
     };
-    let pf = std::env::var_os("ProgramFiles").map(PathBuf::from);
-    let pf86 = std::env::var_os("ProgramFiles(x86)").map(PathBuf::from);
-    let local = std::env::var_os("LOCALAPPDATA").map(PathBuf::from);
-    if let Some(ref base) = pf {
-        push_if(base.join(r"Google\Chrome\Application\chrome.exe"));
-        push_if(base.join(r"Microsoft\Edge\Application\msedge.exe"));
-        push_if(base.join(r"Mozilla Firefox\firefox.exe"));
-        push_if(base.join(r"BraveSoftware\Brave-Browser\Application\brave.exe"));
-        push_if(base.join(r"Vivaldi\Application\vivaldi.exe"));
+    match key.get_value::<u32, _>(VALUE_NAME) {
+        Ok(v) => Ok(Some(v)),
+        Err(_) => Ok(None),
     }
-    if let Some(ref base) = pf86 {
-        push_if(base.join(r"Google\Chrome\Application\chrome.exe"));
-        push_if(base.join(r"Microsoft\Edge\Application\msedge.exe"));
-        push_if(base.join(r"Mozilla Firefox\firefox.exe"));
-    }
-    if let Some(ref base) = local {
-        push_if(base.join(r"Google\Chrome\Application\chrome.exe"));
-        push_if(base.join(r"Microsoft\Edge\Application\msedge.exe"));
-        push_if(base.join(r"Programs\Opera\opera.exe"));
-        push_if(base.join(r"Thorium\Application\thorium.exe"));
-    }
-    paths.sort();
-    paths.dedup();
-    paths
 }
 
-/// Resolve hostnames in allowlist for logging / future WFP use.
+#[cfg(windows)]
+fn set_quic_allowed(subkey: &str, value: u32) -> Result<()> {
+    use winreg::enums::*;
+    use winreg::RegKey;
+    let hkcu = RegKey::predef(HKEY_CURRENT_USER);
+    let (key, _) = hkcu
+        .create_subkey(subkey)
+        .with_context(|| format!("create {subkey}"))?;
+    key.set_value(VALUE_NAME, &value)
+        .with_context(|| format!("set {subkey}\\{VALUE_NAME}"))?;
+    Ok(())
+}
+
+#[cfg(windows)]
+fn restore_policy(item: &PolicyRestore) -> Result<()> {
+    use winreg::enums::*;
+    use winreg::RegKey;
+    let hkcu = RegKey::predef(HKEY_CURRENT_USER);
+    match item.previous {
+        Some(v) => {
+            let (key, _) = hkcu.create_subkey(item.subkey)?;
+            key.set_value(VALUE_NAME, &v)?;
+        }
+        None => {
+            if let Ok(key) = hkcu.open_subkey_with_flags(item.subkey, KEY_SET_VALUE) {
+                let _ = key.delete_value(VALUE_NAME);
+            }
+        }
+    }
+    Ok(())
+}
+
+/// Older rsbox versions installed `rsbox-block-quic*` firewall rules (needed admin).
+/// Clear them when possible so we do not leave orphans after upgrading.
+#[cfg(windows)]
+fn remove_legacy_firewall_rules() -> Result<()> {
+    use std::process::Command;
+    const RULE_PREFIX: &str = "rsbox-block-quic";
+    let list = Command::new("powershell")
+        .args([
+            "-NoProfile",
+            "-Command",
+            &format!(
+                "Get-NetFirewallRule -ErrorAction SilentlyContinue | Where-Object {{ $_.DisplayName -like '{RULE_PREFIX}*' }} | ForEach-Object {{ $_.DisplayName }}"
+            ),
+        ])
+        .output();
+    let Ok(out) = list else {
+        return Ok(());
+    };
+    let text = String::from_utf8_lossy(&out.stdout);
+    for name in text.lines().map(str::trim).filter(|s| !s.is_empty()) {
+        let _ = Command::new("netsh")
+            .args(["advfirewall", "firewall", "delete", "rule", &format!("name={name}")])
+            .output();
+    }
+    Ok(())
+}
+
+/// Resolve hostnames in allowlist for logging / future use.
 #[allow(dead_code)]
 pub fn resolve_allow_hosts(hosts: &[(String, u16)]) -> Vec<(IpAddr, u16)> {
     let mut out = Vec::new();
