@@ -52,11 +52,19 @@ fn install(allow_udp: &[(String, u16)]) -> Result<bool> {
     {
         remove_all_rules().ok();
         let mut any = false;
+        let mut last_err: Option<anyhow::Error> = None;
         for (i, program) in browser_programs().into_iter().enumerate() {
             let name = format!("{RULE_PREFIX}-browser-{i}");
-            add_block_udp443_program(&name, &program)?;
-            any = true;
-            tracing::info!(%program, rule = %name, "block_quic: browser UDP/443 blocked");
+            match add_block_udp443_program(&name, &program) {
+                Ok(()) => {
+                    any = true;
+                    tracing::info!(%program, rule = %name, "block_quic: browser UDP/443 blocked");
+                }
+                Err(err) => {
+                    tracing::debug!(%program, error = %err, "block_quic: skip browser rule");
+                    last_err = Some(err);
+                }
+            }
         }
         let has_udp443_tunnel = allow_udp.iter().any(|(_, p)| *p == 443);
         if has_udp443_tunnel {
@@ -64,15 +72,27 @@ fn install(allow_udp: &[(String, u16)]) -> Result<bool> {
                 "block_quic: UDP tunnel on :443 detected — skipping global UDP/443 block (browser rules only)"
             );
         } else {
-            add_block_udp443_global(&format!("{RULE_PREFIX}-global"))?;
-            any = true;
-            tracing::info!("block_quic: global outbound UDP/443 blocked");
+            match add_block_udp443_global(&format!("{RULE_PREFIX}-global")) {
+                Ok(()) => {
+                    any = true;
+                    tracing::info!("block_quic: global outbound UDP/443 blocked");
+                }
+                Err(err) => {
+                    tracing::debug!(error = %err, "block_quic: global rule failed");
+                    last_err = Some(err);
+                }
+            }
         }
-        // Allowlist entries are recorded for diagnostics; global block skipped when :443 tunnels exist.
         for (host, port) in allow_udp {
             tracing::debug!(%host, %port, "block_quic: udp tunnel allowlisted (not blocked)");
         }
-        Ok(any)
+        if !any {
+            if let Some(err) = last_err {
+                return Err(err).context("no block_quic firewall rules installed");
+            }
+            return Ok(false);
+        }
+        Ok(true)
     }
     #[cfg(not(windows))]
     {
