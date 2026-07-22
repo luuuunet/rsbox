@@ -159,52 +159,9 @@ async fn serve_connection(state: Arc<AppState>, connection: quinn::Connection) -
         }
     });
 
-    // Kick zombie RSQ sessions: keepalives keep active=1 while data-plane stalls.
-    let stall_connection = connection.clone();
-    let stall_user = user_name.clone();
-    let stall_task = tokio::spawn(async move {
-        let mut last_rx = 0u64;
-        let mut last_tx = 0u64;
-        let mut saw_bulk = false;
-        let mut stagnant: u32 = 0;
-        loop {
-            tokio::time::sleep(Duration::from_secs(15)).await;
-            if stall_connection.close_reason().is_some() {
-                break;
-            }
-            let stats = stall_connection.stats();
-            let rx = stats.udp_rx.bytes;
-            let tx = stats.udp_tx.bytes;
-            let delta = rx.saturating_sub(last_rx) + tx.saturating_sub(last_tx);
-            last_rx = rx;
-            last_tx = tx;
-            if delta >= 200_000 {
-                saw_bulk = true;
-                stagnant = 0;
-                continue;
-            }
-            if !saw_bulk {
-                stagnant = 0;
-                continue;
-            }
-            stagnant = stagnant.saturating_add(1);
-            tracing::debug!(
-                user = %stall_user,
-                stagnant,
-                delta,
-                "rsq session low throughput after bulk"
-            );
-            if stagnant >= 6 {
-                tracing::warn!(
-                    user = %stall_user,
-                    delta,
-                    "rsq closing stagnant session (zombie throughput)"
-                );
-                stall_connection.close(0u32.into(), b"stagnant");
-                break;
-            }
-        }
-    });
+    // NOTE: Do not kill sessions on low throughput after bulk.
+    // Keepalives + QUIC idle timeout already reclaim dead links; the old
+    // "stagnant" closer caused reconnect loops that felt like slow network.
 
     loop {
         tokio::select! {
@@ -249,7 +206,6 @@ async fn serve_connection(state: Arc<AppState>, connection: quinn::Connection) -
         }
     }
     prune_task.abort();
-    stall_task.abort();
     for entry in udp_sessions.iter_mut() {
         entry.value().closed.store(true, Ordering::SeqCst);
     }
