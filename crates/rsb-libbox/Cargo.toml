@@ -12,6 +12,7 @@ crate-type = ["staticlib", "cdylib", "rlib"]
 anyhow.workspace = true
 rsb-config.workspace = true
 rsb-constant.workspace = true
+rsb-core = { path = "../rsb-core" }
 rsb-protocol = { path = "../rsb-protocol", default-features = false, features = ["quic"] }
 rsb-api = { path = "../rsb-api", default-features = false }
 tokio.workspace = true
