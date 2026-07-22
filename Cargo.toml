@@ -16,7 +16,7 @@ members = [
 [workspace.package]
 edition = "2021"
 license = "GPL-3.0-or-later"
-version = "0.1.11"
+version = "0.1.12"
 authors = ["rsbox contributors"]
 repository = "https://github.com/luuuunet/rsbox"
 homepage = "https://github.com/luuuunet/rsbox"

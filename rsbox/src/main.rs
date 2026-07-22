@@ -265,6 +265,18 @@ async fn run(path: String) -> anyhow::Result<()> {
         }
     }
 
+    let _quic_block = if options
+        .experimental
+        .as_ref()
+        .map(|e| e.block_quic)
+        .unwrap_or(false)
+    {
+        let allow = options.udp_tunnel_endpoints();
+        rsb_core::QuicBlockGuard::try_install(&allow)
+    } else {
+        None
+    };
+
     let instance = RsBox::new(options.clone()).await?;
     if let Some(cache_svc) = cache.as_ref() {
         instance

@@ -204,6 +204,9 @@ pub struct ExperimentalOptions {
     pub cache_file: Option<Value>,
     #[serde(default)]
     pub v2ray_api: Option<Value>,
+    /// Windows: block browser HTTP/3 (UDP/443) so Chrome falls back to TCP via system proxy.
+    #[serde(default)]
+    pub block_quic: bool,
 }
 
 #[derive(Debug, Clone, Deserialize, Default)]
@@ -275,6 +278,45 @@ impl Options {
     pub fn is_known_outbound(kind: &str) -> bool {
         c::ALL_OUTBOUND_TYPES.contains(&kind)
     }
+
+    /// UDP tunnel endpoints that must remain reachable when blocking browser QUIC (UDP/443).
+    pub fn udp_tunnel_endpoints(&self) -> Vec<(String, u16)> {
+        const UDP_KINDS: &[&str] = &[
+            c::TYPE_RSQ,
+            c::TYPE_HYSTERIA,
+            c::TYPE_HYSTERIA2,
+            c::TYPE_TUIC,
+            c::TYPE_WIREGUARD,
+        ];
+        let mut out = Vec::new();
+        for ob in &self.outbounds {
+            if !UDP_KINDS.iter().any(|k| ob.kind.eq_ignore_ascii_case(k)) {
+                continue;
+            }
+            let server = ob
+                .raw
+                .get("server")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .trim();
+            if server.is_empty() {
+                continue;
+            }
+            let port = ob
+                .raw
+                .get("server_port")
+                .and_then(|v| v.as_u64())
+                .or_else(|| ob.raw.get("port").and_then(|v| v.as_u64()))
+                .unwrap_or(0) as u16;
+            if port == 0 {
+                continue;
+            }
+            out.push((server.to_string(), port));
+        }
+        out.sort();
+        out.dedup();
+        out
+    }
 }
 
 fn default_log_level() -> String {
@@ -310,5 +352,24 @@ mod tests {
         )
         .unwrap();
         assert_eq!(cfg.default_outbound_tag().unwrap(), "b");
+    }
+
+    #[test]
+    fn parse_block_quic_and_udp_endpoints() {
+        let cfg = Options::from_json(
+            r#"{
+              "experimental":{"block_quic":true},
+              "outbounds":[
+                {"type":"rsq","tag":"us","server":"1.2.3.4","server_port":9978},
+                {"type":"hysteria2","tag":"hy","server":"5.6.7.8","server_port":443},
+                {"type":"direct","tag":"direct"}
+              ]
+            }"#,
+        )
+        .unwrap();
+        assert!(cfg.experimental.as_ref().unwrap().block_quic);
+        let eps = cfg.udp_tunnel_endpoints();
+        assert!(eps.contains(&("1.2.3.4".into(), 9978)));
+        assert!(eps.contains(&("5.6.7.8".into(), 443)));
     }
 }

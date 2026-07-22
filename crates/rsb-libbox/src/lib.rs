@@ -13,6 +13,7 @@ struct LibBoxState {
     clash: ClashApiServer,
     v2ray: Option<V2RayApiServer>,
     cache: Option<CacheFileService>,
+    _quic_block: Option<rsb_core::QuicBlockGuard>,
 }
 
 static STATE: Mutex<Option<LibBoxState>> = Mutex::new(None);
@@ -33,6 +34,7 @@ async fn start_from_options(
     ClashApiServer,
     Option<V2RayApiServer>,
     Option<CacheFileService>,
+    Option<rsb_core::QuicBlockGuard>,
 )> {
     tracing_subscriber::fmt()
         .with_env_filter(tracing_subscriber::EnvFilter::new(&options.log.level))
@@ -44,6 +46,17 @@ async fn start_from_options(
             cache = Some(CacheFileService::start(cfg).await?);
         }
     }
+    let quic_block = if options
+        .experimental
+        .as_ref()
+        .map(|e| e.block_quic)
+        .unwrap_or(false)
+    {
+        let allow = options.udp_tunnel_endpoints();
+        rsb_core::QuicBlockGuard::try_install(&allow)
+    } else {
+        None
+    };
     let instance = RsBox::new(options.clone()).await?;
     if let Some(cache_svc) = cache.as_ref() {
         instance
@@ -69,7 +82,7 @@ async fn start_from_options(
         }
     }
     instance.start().await?;
-    Ok((instance, clash, v2ray, cache))
+    Ok((instance, clash, v2ray, cache, quic_block))
 }
 
 fn start_with_options(options: rsb_config::Options) -> i32 {
@@ -85,13 +98,14 @@ fn start_with_options(options: rsb_config::Options) -> i32 {
         Err(_) => return -4,
     };
     match runtime.block_on(start_from_options(options)) {
-        Ok((instance, clash, v2ray, cache)) => {
+        Ok((instance, clash, v2ray, cache, quic_block)) => {
             *guard = Some(LibBoxState {
                 runtime,
                 instance: Some(instance),
                 clash,
                 v2ray,
                 cache,
+                _quic_block: quic_block,
             });
             0
         },
@@ -147,13 +161,14 @@ pub extern "C" fn rsbox_start(config_path: *const c_char) -> i32 {
         start_from_options(options).await
     });
     match result {
-        Ok((instance, clash, v2ray, cache)) => {
+        Ok((instance, clash, v2ray, cache, quic_block)) => {
             *guard = Some(LibBoxState {
                 runtime,
                 instance: Some(instance),
                 clash,
                 v2ray,
                 cache,
+                _quic_block: quic_block,
             });
             0
         },
@@ -191,6 +206,7 @@ pub extern "C" fn rsbox_stop() -> i32 {
         mut clash,
         v2ray,
         cache,
+        _quic_block,
     } = state;
     runtime.block_on(async {
         if let Some(instance) = instance {

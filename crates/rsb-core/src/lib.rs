@@ -6,6 +6,7 @@ pub mod interface;
 pub mod platform;
 pub mod process;
 pub mod proxy_stream;
+pub mod quic_block;
 pub mod rate_limit;
 pub mod runtime;
 pub mod subscription;
@@ -25,6 +26,7 @@ pub use proxy_stream::{
     proxy_box, tcp_stream, tracked_stream, ProxyConn, ProxyStream, SplitProxy, TrackedStream,
 };
 pub use runtime::{Dialer, SharedOutboundManager};
+pub use quic_block::QuicBlockGuard;
 pub use udp::{ProxyUdpIo, ProxyUdpSocket, TokioUdpAdapter};
 
 #[derive(Debug, Clone, Default)]
