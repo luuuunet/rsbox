@@ -8,22 +8,40 @@ class AppConfig {
 
   static const String panelBaseUrl = String.fromEnvironment(
     'PANEL_URL',
-    defaultValue: 'https://g5.lulunet.cc',
+    defaultValue: 'https://tmt.stardash.xyz',
   );
 
   static const String apiPrefix = '/api/v1/app';
 
   static String get apiBaseUrl => '$panelBaseUrl$apiPrefix';
 
+  static Uri get panelUri => Uri.parse(panelBaseUrl);
+
+  /// 当本地 DNS 被污染（如解析到 10.0.0.1）时，直连 Cloudflare 边缘 IP。
+  static const String panelFallbackIps = String.fromEnvironment(
+    'PANEL_FALLBACK_IPS',
+    defaultValue: '104.21.59.241,172.67.185.115',
+  );
+
+  static List<InternetAddress> get panelFallbackAddresses {
+    return panelFallbackIps
+        .split(',')
+        .map((s) => s.trim())
+        .where((s) => s.isNotEmpty)
+        .map(InternetAddress.tryParse)
+        .whereType<InternetAddress>()
+        .toList();
+  }
+
   static String get appKey => appSecrets.appKey;
 
-  static const String appName = 'G5 VPN';
+  static const String appName = '星驰';
 
   static String get deviceName {
-    if (Platform.isAndroid) return 'G5 Android Client';
-    if (Platform.isIOS) return 'G5 iOS Client';
-    if (Platform.isMacOS) return 'G5 macOS Client';
-    if (Platform.isLinux) return 'G5 Linux Client';
-    return 'G5 Desktop Client';
+    if (Platform.isAndroid) return '星驰 Android';
+    if (Platform.isIOS) return '星驰 iOS';
+    if (Platform.isMacOS) return '星驰 macOS';
+    if (Platform.isLinux) return '星驰 Linux';
+    return '星驰 Desktop';
   }
 }
