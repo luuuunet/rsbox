@@ -69,8 +69,9 @@ pub fn build_client_config(
     ));
     transport.stream_receive_window(DEFAULT_STREAM_RECV_WINDOW.into());
     transport.receive_window(DEFAULT_CONN_RECV_WINDOW.into());
-    transport.max_concurrent_bidi_streams(256u32.into());
-    transport.max_concurrent_uni_streams(256u32.into());
+    // Modest headroom over 256; zombie TCP reclaim keeps concurrency in check.
+    transport.max_concurrent_bidi_streams(1024u32.into());
+    transport.max_concurrent_uni_streams(1024u32.into());
     apply_client_mtu(&mut transport, disable_mtu_discovery);
     if use_brutal {
         apply_brutal_transport(
@@ -101,16 +102,18 @@ pub fn build_server_config(
     server_crypto.alpn_protocols = vec![ALPN_RSQ.to_vec()];
 
     let mut transport = TransportConfig::default();
-    transport.max_concurrent_bidi_streams(256u32.into());
+    // Headroom for browser multiplexing; idle outbound TCP reclaim prevents pile-up.
+    transport.max_concurrent_bidi_streams(1024u32.into());
+    transport.max_concurrent_uni_streams(1024u32.into());
     transport.stream_receive_window(DEFAULT_STREAM_RECV_WINDOW.into());
     transport.receive_window(DEFAULT_CONN_RECV_WINDOW.into());
     transport.max_idle_timeout(Some(
-        Duration::from_secs(30)
+        Duration::from_secs(60)
             .try_into()
             .context("idle timeout")?,
     ));
     transport.keep_alive_interval(Some(Duration::from_secs(10)));
-    // Cap Brutal target: high advertised bw must not ignore loss on CN↔US paths.
+    // Brutal CC (capped) — required for advertised acceleration on RSQ servers.
     let brutal_mbps = up_mbps.max(down_mbps).clamp(1, 200);
     apply_brutal_transport(
         &mut transport,
