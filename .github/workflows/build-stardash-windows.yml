@@ -1,0 +1,73 @@
+name: Build StarDash Windows
+
+on:
+  push:
+    branches: ['ci/stardash-windows', 'cursor/stardash-windows-build-bb17']
+  workflow_dispatch:
+
+concurrency:
+  group: stardash-windows-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  windows:
+    name: StarDash Windows x64
+    runs-on: windows-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: subosito/flutter-action@v2
+        with:
+          flutter-version: '3.44.0'
+          channel: stable
+          cache: true
+
+      - name: Download sing-box + wintun
+        shell: pwsh
+        working-directory: clients/stardash
+        run: .\scripts\download_singbox.ps1
+
+      - name: Ensure rsbox kernel present
+        shell: pwsh
+        working-directory: clients/stardash
+        run: |
+          $exe = 'g5_client\assets\binaries\windows\rsbox.exe'
+          if (-not (Test-Path $exe) -or ((Get-Item $exe).Length -lt 1MB)) {
+            .\scripts\download_rsbox.ps1
+          } else {
+            Write-Host "rsbox.exe already present"
+          }
+          Get-Item $exe | Format-List FullName, Length
+
+      - name: Ensure secrets + linux placeholders
+        shell: bash
+        working-directory: clients/stardash
+        run: |
+          bash scripts/ensure_app_secrets.sh
+          bash scripts/ensure_linux_assets.sh
+
+      - name: flutter pub get
+        working-directory: clients/stardash/g5_client
+        run: flutter pub get
+
+      - name: flutter build windows --release
+        working-directory: clients/stardash/g5_client
+        run: flutter build windows --release
+
+      - name: Stage package
+        shell: pwsh
+        working-directory: clients/stardash/g5_client
+        run: |
+          $src = 'build\windows\x64\runner\Release'
+          $dst = '${{ github.workspace }}\stardash-windows-out'
+          New-Item -ItemType Directory -Force -Path $dst | Out-Null
+          Copy-Item -Path "$src\*" -Destination $dst -Recurse -Force
+          Get-ChildItem -Recurse $dst -Filter rsbox.exe | Format-Table FullName, Length
+          Get-ChildItem $dst | Format-Table Name, Length
+
+      - name: Upload artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: stardash-windows-x64
+          path: stardash-windows-out/
+          if-no-files-found: error

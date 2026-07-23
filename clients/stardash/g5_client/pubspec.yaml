@@ -1,0 +1,38 @@
+name: g5_client
+description: G5Panel 自有客户端 — Flutter UI + rsbox（Windows / Android / iOS / macOS / Linux）
+publish_to: "none"
+version: 0.1.0+1
+
+environment:
+  sdk: ">=3.2.0 <4.0.0"
+
+dependencies:
+  flutter:
+    sdk: flutter
+  flutter_localizations:
+    sdk: flutter
+  cupertino_icons: ^1.0.8
+  dio: ^5.7.0
+  flutter_riverpod: ^2.6.1
+  go_router: ^14.6.2
+  flutter_secure_storage: ^9.2.4
+  intl: ^0.20.2
+  path_provider: ^2.1.5
+  shared_preferences: ^2.3.3
+  url_launcher: ^6.3.1
+  webview_flutter: ^4.10.0
+  webview_win_floating: ^3.0.0
+  singbox_mm: ^0.1.9
+
+dev_dependencies:
+  flutter_test:
+    sdk: flutter
+  flutter_lints: ^5.0.0
+
+flutter:
+  uses-material-design: true
+  assets:
+    - assets/binaries/windows/rsbox.exe
+    - assets/binaries/windows/sing-box.exe
+    - assets/binaries/windows/wintun.dll
+    - assets/binaries/linux/sing-box
