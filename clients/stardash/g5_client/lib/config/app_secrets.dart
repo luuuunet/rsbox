@@ -1,18 +1,9 @@
-/// 私有仓库内的客户端密钥（stdash / g5-client 均为 private）。
-/// 管理后台：https://tmt.stardash.xyz → 客户端对接 → 自研 App API
+/// 复制本文件为 `app_secrets.dart` 并填入后台「客户端对接 → 自研 App API」中的 App Key。
 class AppSecrets {
   const AppSecrets();
 
-  /// App Key（请求头 X-App-Key）
-  final String appKey = 'xtQUUJ05gAiURIeYBn1HaGx4u3yAXgHkzPtIH6VRWvNQLmWA';
-
-  /// 面板根地址（与 [AppConfig.panelBaseUrl] 默认值一致）
-  final String panelBaseUrl = 'https://tmt.stardash.xyz';
-
-  /// App API 前缀
-  final String apiPrefix = '/api/v1/app';
-
-  String get apiBaseUrl => '$panelBaseUrl$apiPrefix';
+  /// 留空表示不发送 X-App-Key（仅当面板未配置 Key 时可用）。
+  final String appKey = 'YOUR_APP_KEY_HERE';
 }
 
 const appSecrets = AppSecrets();
