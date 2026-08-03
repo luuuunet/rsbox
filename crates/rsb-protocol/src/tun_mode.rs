@@ -17,6 +17,8 @@ pub struct TunInbound {
     address: String,
     auto_route: bool,
     strict_route: bool,
+    /// Android/iOS VpnService / NetworkExtension TUN file descriptor.
+    raw_fd: Option<i32>,
     dialer: Arc<Dialer>,
     dns: Arc<DnsRouter>,
     shutdown: tokio::sync::watch::Sender<bool>,
@@ -27,6 +29,19 @@ pub struct TunInbound {
 impl TunInbound {
     pub fn new(tag: String, raw: Value, dialer: Arc<Dialer>, dns: Arc<DnsRouter>) -> Result<Self> {
         let (shutdown, _) = tokio::sync::watch::channel(false);
+        let raw_fd = raw
+            .get("fd")
+            .or_else(|| raw.get("file_descriptor"))
+            .and_then(|v| v.as_i64())
+            .map(|v| v as i32);
+        // When an external fd is provided (mobile VpnService), do not install OS routes.
+        let auto_route = if raw_fd.is_some() {
+            false
+        } else {
+            raw.get("auto_route")
+                .and_then(|v| v.as_bool())
+                .unwrap_or(true)
+        };
         Ok(Self {
             tag,
             name: raw
@@ -36,14 +51,12 @@ impl TunInbound {
                 .to_string(),
             mtu: raw.get("mtu").and_then(|v| v.as_u64()).unwrap_or(1500) as u16,
             address: parse_tun_address(&raw),
-            auto_route: raw
-                .get("auto_route")
-                .and_then(|v| v.as_bool())
-                .unwrap_or(true),
+            auto_route,
             strict_route: raw
                 .get("strict_route")
                 .and_then(|v| v.as_bool())
                 .unwrap_or(true),
+            raw_fd,
             dialer,
             dns,
             shutdown,
@@ -122,13 +135,20 @@ impl Inbound for TunInbound {
     async fn start(&self) -> Result<(), BoxError> {
         let mut cfg = tun::Configuration::default();
         cfg.tun_name(&self.name).mtu(self.mtu).up();
-        #[cfg(unix)]
-        {
-            cfg.address(&self.address);
-        }
-        #[cfg(windows)]
-        {
-            cfg.destination(parse_tun_gateway(&self.address));
+        if let Some(fd) = self.raw_fd {
+            // Mobile VpnService / NE owns the fd lifetime.
+            cfg.raw_fd(fd);
+            #[cfg(any(target_os = "android", target_os = "ios", target_os = "linux"))]
+            cfg.close_fd_on_drop(false);
+        } else {
+            #[cfg(unix)]
+            {
+                cfg.address(&self.address);
+            }
+            #[cfg(windows)]
+            {
+                cfg.destination(parse_tun_gateway(&self.address));
+            }
         }
         let dev = tun::create_as_async(&cfg).map_err(|e| anyhow::anyhow!("tun create: {e}"))?;
         if self.auto_route {
@@ -147,7 +167,13 @@ impl Inbound for TunInbound {
         let mut stack_cfg = IpStackConfig::default();
         stack_cfg.mtu(self.mtu).context("ipstack mtu")?;
         let mut ip_stack = IpStack::new(stack_cfg, dev);
-        tracing::info!(tag = %self.tag, name = %self.name, %self.address, "tun ipstack started");
+        tracing::info!(
+            tag = %self.tag,
+            name = %self.name,
+            %self.address,
+            raw_fd = ?self.raw_fd,
+            "tun ipstack started"
+        );
         let dialer = self.dialer.clone();
         let dns = self.dns.clone();
         let tag = self.tag.clone();

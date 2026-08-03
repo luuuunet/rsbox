@@ -83,5 +83,7 @@ default = ["quic", "desktop"]
 quic = []
 # Desktop-only: TUN inbound, SSH outbound, ipstack userspace stack
 desktop = ["dep:tun", "dep:ssh2", "dep:ipstack"]
+# Mobile (Android/iOS): TUN via VpnService/NetworkExtension fd + ipstack
+mobile = ["dep:tun", "dep:ipstack"]
 wireguard-tunnel = ["dep:rsb-wireguard"]
 ssh-vendored = ["ssh2/vendored-openssl"]

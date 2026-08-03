@@ -17,10 +17,50 @@ pub async fn tcp_connect(server: &str, port: u16) -> Result<TcpStream> {
         .with_context(|| format!("resolve {server}:{port}"))?
         .next()
         .with_context(|| format!("no address for {server}:{port}"))?;
-    let stream = TcpStream::connect(addr)
+    // Bind buffers BEFORE connect so the initial window scale / rcvbuf take effect
+    // on Windows (post-connect SO_RCVBUF often sticks near ~256KiB → ~7Mbps @300ms RTT).
+    let socket = match addr {
+        SocketAddr::V4(_) => tokio::net::TcpSocket::new_v4(),
+        SocketAddr::V6(_) => tokio::net::TcpSocket::new_v6(),
+    }
+    .context("create tcp socket")?;
+    // Prefer large rcvbuf; fall back if OS clamps.
+    for size in [16 * 1024 * 1024usize, 8 * 1024 * 1024, 4 * 1024 * 1024, 1024 * 1024] {
+        if socket.set_recv_buffer_size(size as u32).is_ok() {
+            break;
+        }
+    }
+    for size in [16 * 1024 * 1024usize, 8 * 1024 * 1024, 4 * 1024 * 1024, 1024 * 1024] {
+        if socket.set_send_buffer_size(size as u32).is_ok() {
+            break;
+        }
+    }
+    let stream = socket
+        .connect(addr)
         .await
         .with_context(|| format!("connect {server}:{port}"))?;
     let _ = stream.set_nodelay(true);
+    let sock = socket2::SockRef::from(&stream);
+    for size in [16 * 1024 * 1024usize, 8 * 1024 * 1024, 4 * 1024 * 1024, 1024 * 1024] {
+        if sock.set_recv_buffer_size(size).is_ok() {
+            break;
+        }
+    }
+    for size in [16 * 1024 * 1024usize, 8 * 1024 * 1024, 4 * 1024 * 1024, 1024 * 1024] {
+        if sock.set_send_buffer_size(size).is_ok() {
+            break;
+        }
+    }
+    if let Ok(sz) = sock.recv_buffer_size() {
+        if sz < 1024 * 1024 {
+            tracing::warn!(
+                rcvbuf = sz,
+                "tcp rcvbuf still <1MiB after tune; high-RTT paths will be window-limited"
+            );
+        } else {
+            tracing::debug!(rcvbuf = sz, "tcp rcvbuf ready");
+        }
+    }
     Ok(stream)
 }
 

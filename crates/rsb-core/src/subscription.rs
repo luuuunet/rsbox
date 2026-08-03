@@ -65,6 +65,7 @@ impl Subscription {
             && !content.starts_with("trojan://")
             && !content.starts_with("hysteria2://")
             && !content.starts_with("rsq://")
+            && !content.starts_with("rst://")
         {
             // 尝试 Base64 解码
             if let Ok(decoded) = general_purpose::STANDARD.decode(content) {
@@ -109,6 +110,8 @@ impl Subscription {
             self.parse_hysteria2(link)
         } else if link.starts_with("rsq://") {
             self.parse_rsq(link)
+        } else if link.starts_with("rst://") {
+            self.parse_rst(link)
         } else {
             anyhow::bail!("Unknown link format: {}", link)
         }
@@ -279,6 +282,49 @@ impl Subscription {
             }
         }))
     }
+
+    fn parse_rst(&self, link: &str) -> Result<Value> {
+        let url = url::Url::parse(link)?;
+        let host = url.host_str().context("No host")?;
+        let port = url.port().unwrap_or(443);
+        let password = decode_url_userinfo(url.username());
+        let params: HashMap<String, String> = url.query_pairs().into_owned().collect();
+
+        Ok(serde_json::json!({
+            "type": "rst",
+            "tag": url.fragment().unwrap_or("rst"),
+            "server": host,
+            "server_port": port,
+            "password": password,
+            "up_mbps": params.get("up").and_then(|s| s.parse::<u32>().ok()).unwrap_or(0),
+            "down_mbps": params.get("down").and_then(|s| s.parse::<u32>().ok()).unwrap_or(0),
+            "traffic_profile": params.get("profile").cloned().unwrap_or_else(|| "video".to_string()),
+            "warm_up": params.get("warm_up").map(|s| s != "0" && s != "false").unwrap_or(true),
+            "udp": params.get("udp").map(|s| s != "0" && s != "false").unwrap_or(true),
+            "auto_reconnect": params
+                .get("auto_reconnect")
+                .map(|s| s != "0" && s != "false")
+                .unwrap_or(true),
+            "brutal": true,
+            "obfs": params.get("obfs").map(|obfs_type| {
+                let version = params
+                    .get("obfs-version")
+                    .and_then(|s| s.parse::<u64>().ok())
+                    .unwrap_or(1);
+                serde_json::json!({
+                    "enabled": true,
+                    "type": obfs_type,
+                    "password": params.get("obfs-password").cloned().unwrap_or_default(),
+                    "version": version,
+                })
+            }),
+            "tls": {
+                "enabled": true,
+                "server_name": params.get("sni").cloned().unwrap_or_else(|| host.to_string()),
+                "insecure": params.get("insecure").map(|s| s == "1").unwrap_or(false),
+            }
+        }))
+    }
 }
 
 fn decode_url_userinfo(input: &str) -> String {
@@ -418,6 +464,41 @@ mod tests {
         let link = "vless://uuid@example.com:443?security=tls&sni=example.com#test";
         let result = sub.parse_vless(link);
         assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_parse_rst_default_brutal() {
+        let sub = Subscription::new("".to_string());
+        let result = sub
+            .parse_rst("rst://secret@example.com:8443?sni=example.com#n1")
+            .unwrap();
+        assert_eq!(result["brutal"], true);
+        assert_eq!(result["warm_up"], true);
+    }
+
+    #[test]
+    fn test_parse_rst() {
+        let sub = Subscription::new("".to_string());
+        let link =
+            "rst://secret@example.com:8443?up=50&down=100&sni=example.com&profile=raw&brutal=1&warm_up=0#node1";
+        let result = sub.parse_rst(link).unwrap();
+        assert_eq!(result["type"], "rst");
+        assert_eq!(result["password"], "secret");
+        assert_eq!(result["server_port"], 8443);
+        assert_eq!(result["brutal"], true);
+        assert_eq!(result["up_mbps"], 50);
+        assert_eq!(result["warm_up"], false);
+    }
+
+    #[test]
+    fn test_parse_rst_obfs_version() {
+        let sub = Subscription::new("".to_string());
+        let link =
+            "rst://secret@example.com:8443?obfs=salamander&obfs-password=pw&obfs-version=2#v2node";
+        let result = sub.parse_rst(link).unwrap();
+        assert_eq!(result["obfs"]["version"], 2);
+        assert_eq!(result["obfs"]["password"], "pw");
+        assert_eq!(result["obfs"]["enabled"], true);
     }
 
     #[test]

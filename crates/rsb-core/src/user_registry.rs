@@ -7,7 +7,8 @@ use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::Arc;
 use uuid::Uuid;
 
-const MBPS_TO_BPS: u64 = 1_000_000;
+/// Mbps → bytes/sec (megabit). Align with RSQ/Hy2/RST auth (`125_000`).
+const MBPS_TO_BPS: u64 = 125_000;
 
 #[derive(Debug, Clone, Default)]
 pub struct UserLimits {
@@ -65,7 +66,7 @@ impl UserRegistry {
     fn ingest_inbound(&self, kind: &str, raw: &Value, inbound_tag: &str) {
         match kind {
             "vless" | "vmess" | "tuic" => self.ingest_uuid_users(raw, inbound_tag),
-            "trojan" | "anytls" | "hysteria2" | "rsq" | "shadowtls" => {
+            "trojan" | "anytls" | "hysteria2" | "rsq" | "rst" | "shadowtls" => {
                 self.ingest_password_users(raw, inbound_tag)
             }
             "shadowsocks" => self.ingest_shadowsocks_users(raw, inbound_tag),

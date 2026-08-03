@@ -2,12 +2,12 @@
 
 use crate::build_context::BuildContext;
 use crate::group::OutboundController;
-#[cfg(feature = "desktop")]
+#[cfg(any(feature = "desktop", feature = "mobile"))]
 use crate::tun_mode;
 use crate::{
     anytls, chain_outbound, direct, dns_inbound, dns_outbound, group, http_outbound, hysteria2,
-    hysteria_outbound, inbound_proxy, legacy, legacy_inbound, rsq, shadowsocks, shadowtls, socks,
-    trojan, tuic, vless, vmess, wireguard_outbound,
+    hysteria_outbound, inbound_proxy, legacy, legacy_inbound, rsq, rst, shadowsocks, shadowtls,
+    socks, trojan, tuic, vless, vmess, wireguard_outbound,
 };
 use anyhow::{bail, Result};
 use rsb_config::{Inbound, Outbound};
@@ -54,6 +54,7 @@ pub fn build_outbound(
         )?),
         TYPE_HYSTERIA2 => Box::new(hysteria2::Hysteria2Outbound::new(tag, ob.raw.clone())?),
         TYPE_RSQ => Box::new(rsq::RsqOutbound::new(tag, ob.raw.clone())?),
+        TYPE_RST => Box::new(rst::RstOutbound::new(tag, ob.raw.clone())?),
         TYPE_TROJAN => Box::new(trojan::TrojanOutbound::new(tag, ob.raw.clone(), shared.clone())?),
         TYPE_VLESS => Box::new(vless::VlessOutbound::new(tag, ob.raw.clone(), shared.clone())?),
         TYPE_VMESS => Box::new(vmess::VmessOutbound::new(tag, ob.raw.clone(), shared.clone())?),
@@ -124,6 +125,11 @@ pub fn build_inbound(
             ib.raw.clone(),
             dialer.connections(),
         )?),
+        TYPE_RST => Box::new(rst::RstInbound::new(
+            tag,
+            ib.raw.clone(),
+            dialer.connections(),
+        )?),
         TYPE_TROJAN => Box::new(trojan::TrojanInbound::new(
             tag,
             ib.raw.clone(),
@@ -154,7 +160,7 @@ pub fn build_inbound(
             ib.raw.clone(),
             dialer.connections(),
         )?),
-        #[cfg(feature = "desktop")]
+        #[cfg(any(feature = "desktop", feature = "mobile"))]
         TYPE_TUN => Box::new(tun_mode::TunInbound::new(
             tag,
             ib.raw.clone(),

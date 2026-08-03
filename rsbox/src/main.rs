@@ -58,6 +58,42 @@ enum Commands {
         #[arg(long, default_value_t = false)]
         insecure: bool,
     },
+    /// Generate self-signed TLS cert/key for local RST (same format as RSQ).
+    RstGenCert {
+        #[arg(long, default_value = "examples/certs/rst-local")]
+        output_dir: String,
+        #[arg(long, default_value = "rst.local")]
+        name: String,
+    },
+    /// Print an `rst://` share link (Brutal TCP, default video profile).
+    RstGenLink {
+        #[arg(long)]
+        server: String,
+        #[arg(long, default_value_t = 18444)]
+        port: u16,
+        #[arg(long)]
+        password: String,
+        #[arg(long)]
+        name: Option<String>,
+        #[arg(long)]
+        sni: Option<String>,
+        #[arg(long)]
+        up_mbps: Option<u32>,
+        #[arg(long)]
+        down_mbps: Option<u32>,
+        #[arg(long, default_value = "video")]
+        profile: String,
+        #[arg(long, default_value_t = true)]
+        warm_up: bool,
+        #[arg(long, default_value_t = true)]
+        udp: bool,
+        #[arg(long)]
+        obfs_password: Option<String>,
+        #[arg(long)]
+        obfs_version: Option<u8>,
+        #[arg(long, default_value_t = false)]
+        insecure: bool,
+    },
 }
 
 #[tokio::main]
@@ -108,7 +144,51 @@ async fn main() -> anyhow::Result<()> {
             .encode();
             println!("{link}");
             Ok(())
-        },
+        }
+        Commands::RstGenCert { output_dir, name } => {
+            let dir = std::path::Path::new(&output_dir);
+            let (cert, key) = rsb_protocol::rsq::write_dev_certs(dir, &name)?;
+            println!("Wrote RST dev TLS files:");
+            println!("  {}", cert.display());
+            println!("  {}", key.display());
+            println!("Use with examples/rst-local.json (client: tls.insecure=true)");
+            Ok(())
+        }
+        Commands::RstGenLink {
+            server,
+            port,
+            password,
+            name,
+            sni,
+            up_mbps,
+            down_mbps,
+            profile,
+            warm_up,
+            udp,
+            obfs_password,
+            obfs_version,
+            insecure,
+        } => {
+            let link = rsb_protocol::rst::RstShareLink {
+                password: &password,
+                server: &server,
+                port,
+                name: name.as_deref(),
+                sni: sni.as_deref().or(Some(server.as_str())),
+                up_mbps,
+                down_mbps,
+                profile: Some(profile.as_str()),
+                warm_up,
+                udp,
+                obfs_password: obfs_password.as_deref(),
+                obfs_version,
+                insecure,
+                brutal: true,
+            }
+            .encode();
+            println!("{link}");
+            Ok(())
+        }
     }
 }
 

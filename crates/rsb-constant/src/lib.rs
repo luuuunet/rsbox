@@ -23,6 +23,7 @@ pub const TYPE_VLESS: &str = "vless";
 pub const TYPE_TUIC: &str = "tuic";
 pub const TYPE_HYSTERIA2: &str = "hysteria2";
 pub const TYPE_RSQ: &str = "rsq";
+pub const TYPE_RST: &str = "rst";
 pub const TYPE_TAILSCALE: &str = "tailscale";
 pub const TYPE_SELECTOR: &str = "selector";
 pub const TYPE_URLTEST: &str = "urltest";
@@ -58,6 +59,7 @@ pub const ALL_INBOUND_TYPES: &[&str] = &[
     TYPE_HYSTERIA,
     TYPE_HYSTERIA2,
     TYPE_RSQ,
+    TYPE_RST,
     TYPE_TUIC,
     TYPE_DNS,
 ];
@@ -82,6 +84,7 @@ pub const ALL_OUTBOUND_TYPES: &[&str] = &[
     TYPE_HYSTERIA,
     TYPE_HYSTERIA2,
     TYPE_RSQ,
+    TYPE_RST,
     TYPE_TUIC,
     TYPE_WIREGUARD,
     TYPE_DNS,

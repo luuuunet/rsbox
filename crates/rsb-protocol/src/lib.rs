@@ -29,6 +29,7 @@ pub mod reality_sidecar;
 pub mod singbox_inbound_sidecar;
 pub mod registry;
 pub mod rsq;
+pub mod rst;
 pub mod services;
 pub mod shadowsocks;
 pub mod shadowtls;
@@ -42,7 +43,7 @@ pub mod tailscale_noise;
 pub mod transport;
 pub mod trojan;
 pub mod tuic;
-#[cfg(feature = "desktop")]
+#[cfg(any(feature = "desktop", feature = "mobile"))]
 pub mod tun_mode;
 pub mod user_relay;
 pub mod udp_over_tcp;

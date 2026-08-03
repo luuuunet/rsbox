@@ -1,0 +1,60 @@
+{
+  "log": { "level": "info", "timestamp": true },
+  "inbounds": [
+    {
+      "type": "mixed",
+      "tag": "mixed-in",
+      "listen": "127.0.0.1",
+      "listen_port": 17892
+    },
+    {
+      "type": "rst",
+      "tag": "rst-in",
+      "listen": "127.0.0.1",
+      "listen_port": 18444,
+      "users": [{ "name": "local", "password": "rst-local-test" }],
+      "up_mbps": 100,
+      "down_mbps": 200,
+      "udp": true,
+      "allow_private": true,
+      "obfs": {
+        "enabled": true,
+        "password": "rst-local-test",
+        "version": 2
+      },
+      "tls": {
+        "enabled": true,
+        "certificate_path": "certs/rsq-local/fullchain.pem",
+        "key_path": "certs/rsq-local/privkey.pem"
+      }
+    }
+  ],
+  "outbounds": [
+    {
+      "type": "rst",
+      "tag": "rst-out",
+      "server": "127.0.0.1",
+      "server_port": 18444,
+      "password": "rst-local-test",
+      "up_mbps": 100,
+      "down_mbps": 200,
+      "traffic_profile": "video",
+      "warm_up": true,
+      "auto_reconnect": true,
+      "obfs": {
+        "enabled": true,
+        "password": "rst-local-test",
+        "version": 2
+      },
+      "tls": {
+        "enabled": true,
+        "server_name": "rst.local",
+        "insecure": true
+      }
+    },
+    { "type": "direct", "tag": "direct" }
+  ],
+  "route": {
+    "final": "rst-out"
+  }
+}
