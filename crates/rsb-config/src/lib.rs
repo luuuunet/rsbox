@@ -90,6 +90,15 @@ pub struct RouteOptions {
     pub final_: Option<String>,
     #[serde(default, rename = "final")]
     pub final_tag: Option<String>,
+    /// Built-in smart split: `"china-direct"` / `"smart"` → CN geosite/geoip direct, else `final`.
+    #[serde(default)]
+    pub preset: Option<String>,
+    /// Outbound tag used by `preset` for China / private direct (default `direct`).
+    #[serde(default)]
+    pub direct_tag: Option<String>,
+    /// Optional proxy tag hint for presets (defaults to `final` / default outbound).
+    #[serde(default)]
+    pub proxy_tag: Option<String>,
     #[serde(default)]
     pub auto_detect_interface: bool,
     #[serde(default)]
@@ -116,6 +125,9 @@ pub struct RuleSet {
     pub path: Option<String>,
     #[serde(default)]
     pub url: Option<String>,
+    /// Extra download mirrors tried after `url` (China-friendly CDNs, etc.).
+    #[serde(default)]
+    pub urls: Vec<String>,
     #[serde(flatten)]
     pub raw: Value,
 }
@@ -142,6 +154,9 @@ pub struct RouteRule {
     pub geosite: Vec<String>,
     #[serde(default)]
     pub geoip: Vec<String>,
+    /// sing-box compatible: match RFC1918 / link-local / loopback destinations.
+    #[serde(default)]
+    pub ip_is_private: bool,
     #[serde(default)]
     pub source_ip_cidr: Vec<String>,
     #[serde(default)]

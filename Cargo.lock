@@ -2992,6 +2992,7 @@ dependencies = [
  "base64 0.22.1",
  "reqwest",
  "rsb-config",
+ "rsb-core",
  "rustls",
  "serde_json",
  "tokio",

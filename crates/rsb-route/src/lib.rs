@@ -1,8 +1,13 @@
+mod embedded_geo;
 mod geo;
 mod rule_cache;
 mod srs;
 
-use geo::{builtin_geoip_private_cidrs, collect_geo_tags_from_rules, collect_remote_geo_rule_sets};
+use embedded_geo::{embedded_geo_srs, embedded_geosite_cn_text};
+use geo::{
+    builtin_geoip_private_cidrs, collect_geo_tags_from_rules, collect_remote_geo_rule_sets,
+    expand_china_direct_preset,
+};
 use rule_cache::RuleSetCache;
 
 use anyhow::{Context, Result};
@@ -30,10 +35,38 @@ pub struct CompiledRuleSet {
     domain_keywords: Vec<String>,
     ip_cidrs: Vec<String>,
     ip_ranges: Vec<(IpAddr, IpAddr)>,
+    /// Lowercased exact domains for O(1) lookup.
+    domain_set: std::collections::HashSet<String>,
+    /// Lowercased suffixes (no leading dot) for O(labels) match.
+    suffix_set: std::collections::HashSet<String>,
+}
+
+impl CompiledRuleSet {
+    fn finalize(mut self) -> Self {
+        self.domain_set = self
+            .domains
+            .iter()
+            .map(|d| d.to_ascii_lowercase())
+            .collect();
+        self.suffix_set = self
+            .domain_suffixes
+            .iter()
+            .map(|s| {
+                s.trim_start_matches('*')
+                    .trim_start_matches('.')
+                    .to_ascii_lowercase()
+            })
+            .filter(|s| !s.is_empty())
+            .collect();
+        // Exact domains stay exact-only (do NOT promote into suffix_set —
+        // otherwise adservice.google.com would make *.google.com match).
+        self
+    }
 }
 
 impl RuleRouter {
-    pub fn new(rules: RouteOptions, default_tag: String) -> Self {
+    pub fn new(mut rules: RouteOptions, default_tag: String) -> Self {
+        expand_china_direct_preset(&mut rules, &default_tag);
         let rule_set_cache = rules
             .rule_set_download
             .as_ref()
@@ -64,6 +97,57 @@ impl RuleRouter {
             if map.contains_key(&tag) {
                 continue;
             }
+            // geosite-cn: prefer fast pre-extracted text (SRS succinct parse is too slow).
+            if tag == "geosite-cn" {
+                let compiled = parse_text_rules(embedded_geosite_cn_text());
+                info!(
+                    tag = %tag,
+                    domains = compiled.domains.len(),
+                    suffixes = compiled.domain_suffixes.len(),
+                    "embedded geosite text loaded"
+                );
+                map.insert(tag, Arc::new(compiled));
+                continue;
+            }
+            // Prefer binary baked into rsbox (offline / no download).
+            if let Some(bytes) = embedded_geo_srs(&tag) {
+                match parse_srs(bytes) {
+                    Ok(parsed) => {
+                        info!(
+                            tag = %tag,
+                            domains = parsed.domains.len(),
+                            cidrs = parsed.ip_cidrs.len(),
+                            "embedded geo rule-set loaded"
+                        );
+                        if let Some(cache) = self.rule_set_cache.as_ref() {
+                            let path = cache.file_path(&tag, true);
+                            if let Some(parent) = path.parent() {
+                                let _ = std::fs::create_dir_all(parent);
+                            }
+                            let _ = std::fs::write(&path, bytes);
+                        }
+                        map.insert(
+                            tag,
+                            Arc::new(
+                                CompiledRuleSet {
+                                    domains: parsed.domains,
+                                    domain_suffixes: parsed.domain_suffixes,
+                                    domain_keywords: parsed.domain_keywords,
+                                    ip_cidrs: parsed.ip_cidrs,
+                                    ip_ranges: parsed.ip_ranges,
+                                    domain_set: Default::default(),
+                                    suffix_set: Default::default(),
+                                }
+                                .finalize(),
+                            ),
+                        );
+                        continue;
+                    },
+                    Err(err) => {
+                        tracing::warn!(tag = %tag, error = %err, "embedded geo parse failed");
+                    },
+                }
+            }
             match load_rule_set(&tag, &rs, self.rule_set_cache.as_ref()).await {
                 Ok(compiled) => {
                     info!(tag = %tag, domains = compiled.domains.len(), cidrs = compiled.ip_cidrs.len(), "geo rule-set loaded");
@@ -77,13 +161,18 @@ impl RuleRouter {
         if geoip_tags.contains("private") {
             map.insert(
                 "geoip-private".into(),
-                Arc::new(CompiledRuleSet {
-                    domains: Vec::new(),
-                    domain_suffixes: Vec::new(),
-                    domain_keywords: Vec::new(),
-                    ip_cidrs: builtin_geoip_private_cidrs(),
-                    ip_ranges: Vec::new(),
-                }),
+                Arc::new(
+                    CompiledRuleSet {
+                        domains: Vec::new(),
+                        domain_suffixes: Vec::new(),
+                        domain_keywords: Vec::new(),
+                        ip_cidrs: builtin_geoip_private_cidrs(),
+                        ip_ranges: Vec::new(),
+                        domain_set: Default::default(),
+                        suffix_set: Default::default(),
+                    }
+                    .finalize(),
+                ),
             );
         }
         self.rule_sets = Arc::new(map);
@@ -172,6 +261,15 @@ impl Router for RuleRouter {
                     continue;
                 }
             }
+            if rule.ip_is_private {
+                let Some(dest) = metadata.destination else {
+                    continue;
+                };
+                if !is_private_ip(dest.ip()) {
+                    continue;
+                }
+                return Ok(rule_outbound(rule).unwrap_or(self.default_tag.clone()));
+            }
             if !rule.geosite.is_empty() || !rule.geoip.is_empty() {
                 let mut matched = false;
                 for code in &rule.geosite {
@@ -231,10 +329,7 @@ impl Router for RuleRouter {
                 if rule.domain.iter().any(|d| d == domain) {
                     return Ok(rule_outbound(rule).unwrap_or(self.default_tag.clone()));
                 }
-                if rule.domain_suffix.iter().any(|s| {
-                    domain.ends_with(s.trim_start_matches('*'))
-                        || domain.ends_with(s.trim_start_matches('.'))
-                }) {
+                if rule.domain_suffix.iter().any(|s| domain_matches_suffix(domain, s)) {
                     return Ok(rule_outbound(rule).unwrap_or(self.default_tag.clone()));
                 }
                 if rule.domain_keyword.iter().any(|k| domain.contains(k)) {
@@ -255,6 +350,23 @@ impl Router for RuleRouter {
         }
         Ok(self.default_tag.clone())
     }
+}
+
+/// Suffix match with label boundary: `le.com` must not match `google.com`.
+fn domain_matches_suffix(domain: &str, suffix: &str) -> bool {
+    let s = suffix
+        .trim_start_matches('*')
+        .trim_start_matches('.')
+        .trim();
+    if s.is_empty() {
+        return false;
+    }
+    domain.eq_ignore_ascii_case(s)
+        || domain
+            .len()
+            > s.len()
+            && domain.as_bytes().get(domain.len() - s.len() - 1) == Some(&b'.')
+            && domain[domain.len() - s.len()..].eq_ignore_ascii_case(s)
 }
 
 fn rule_constraint_only_match(rule: &rsb_config::RouteRule) -> bool {
@@ -284,7 +396,8 @@ fn process_path_regex_matches(pattern: &str, path: &str) -> bool {
 }
 
 fn rule_positive_matchers_empty(rule: &rsb_config::RouteRule) -> bool {
-    rule.geosite.is_empty()
+    !rule.ip_is_private
+        && rule.geosite.is_empty()
         && rule.geoip.is_empty()
         && rule.rule_set.is_empty()
         && rule.domain.is_empty()
@@ -309,17 +422,11 @@ fn geoip_rule_set_matches(rs: &CompiledRuleSet, ip: IpAddr) -> bool {
 
 fn rule_set_matches(rs: &CompiledRuleSet, metadata: &Metadata) -> bool {
     if let Some(domain) = &metadata.domain {
-        if rs.domains.iter().any(|d| d == domain) {
+        let host = domain.to_ascii_lowercase();
+        if rs.domain_set.contains(&host) || domain_matches_suffix_set(&host, &rs.suffix_set) {
             return true;
         }
-        if rs
-            .domain_suffixes
-            .iter()
-            .any(|s| domain.ends_with(s.trim_start_matches('*').trim_start_matches('.')))
-        {
-            return true;
-        }
-        if rs.domain_keywords.iter().any(|k| domain.contains(k)) {
+        if rs.domain_keywords.iter().any(|k| host.contains(&k.to_ascii_lowercase())) {
             return true;
         }
     }
@@ -338,6 +445,24 @@ fn rule_set_matches(rs: &CompiledRuleSet, metadata: &Metadata) -> bool {
     false
 }
 
+/// Match host against a set of suffixes in O(label count), not O(rule count).
+fn domain_matches_suffix_set(host: &str, suffixes: &std::collections::HashSet<String>) -> bool {
+    if suffixes.is_empty() {
+        return false;
+    }
+    if suffixes.contains(host) {
+        return true;
+    }
+    let mut rest = host;
+    while let Some(idx) = rest.find('.') {
+        rest = &rest[idx + 1..];
+        if suffixes.contains(rest) {
+            return true;
+        }
+    }
+    false
+}
+
 async fn load_rule_set(
     tag: &str,
     rs: &RuleSet,
@@ -345,23 +470,20 @@ async fn load_rule_set(
 ) -> Result<CompiledRuleSet> {
     let binary = rs.format.as_deref() == Some("binary")
         || rs.path.as_deref().is_some_and(|p| p.ends_with(".srs"))
-        || rs.url.as_deref().is_some_and(|u| u.ends_with(".srs"));
+        || rs.url.as_deref().is_some_and(|u| u.ends_with(".srs"))
+        || rs.urls.iter().any(|u| u.ends_with(".srs"));
 
     if binary {
         let bytes = if let Some(path) = &rs.path {
             tokio::fs::read(path)
                 .await
                 .with_context(|| format!("read binary rule-set `{path}`"))?
-        } else if let Some(url) = &rs.url {
+        } else if rs.url.is_some() || !rs.urls.is_empty() {
+            let urls = rule_set_urls(rs);
             if let Some(cache) = cache {
-                cache.read_or_fetch(tag, url, true).await?
+                cache.read_or_fetch_urls(tag, &urls, true).await?
             } else {
-                reqwest::get(url)
-                    .await
-                    .with_context(|| format!("fetch binary rule-set `{url}`"))?
-                    .bytes()
-                    .await?
-                    .to_vec()
+                fetch_first_url(&urls).await?
             }
         } else {
             anyhow::bail!("binary rule-set requires path or url");
@@ -373,23 +495,24 @@ async fn load_rule_set(
             domain_keywords: parsed.domain_keywords,
             ip_cidrs: parsed.ip_cidrs,
             ip_ranges: parsed.ip_ranges,
-        });
+            domain_set: Default::default(),
+            suffix_set: Default::default(),
+        }
+        .finalize());
     }
 
     let text = if let Some(path) = &rs.path {
         tokio::fs::read_to_string(path)
             .await
             .with_context(|| format!("read rule-set path `{path}`"))?
-    } else if let Some(url) = &rs.url {
+    } else if rs.url.is_some() || !rs.urls.is_empty() {
+        let urls = rule_set_urls(rs);
         if let Some(cache) = cache {
-            let bytes = cache.read_or_fetch(tag, url, false).await?;
+            let bytes = cache.read_or_fetch_urls(tag, &urls, false).await?;
             String::from_utf8(bytes).context("rule-set cache is not valid utf-8")?
         } else {
-            reqwest::get(url)
-                .await
-                .with_context(|| format!("fetch rule-set `{url}`"))?
-                .text()
-                .await?
+            let bytes = fetch_first_url(&urls).await?;
+            String::from_utf8(bytes).context("rule-set body is not valid utf-8")?
         }
     } else if let Some(inline) = rs.raw.get("rules").and_then(|v| v.as_array()) {
         return parse_json_rules(inline);
@@ -397,6 +520,44 @@ async fn load_rule_set(
         anyhow::bail!("rule-set requires path, url, or inline rules");
     };
     Ok(parse_text_rules(&text))
+}
+
+fn rule_set_urls(rs: &RuleSet) -> Vec<String> {
+    let mut urls = Vec::new();
+    if let Some(u) = &rs.url {
+        urls.push(u.clone());
+    }
+    for u in &rs.urls {
+        if !urls.iter().any(|x| x == u) {
+            urls.push(u.clone());
+        }
+    }
+    urls
+}
+
+async fn fetch_first_url(urls: &[String]) -> Result<Vec<u8>> {
+    let mut last_err: Option<anyhow::Error> = None;
+    for url in urls {
+        match reqwest::get(url).await {
+            Ok(resp) if resp.status().is_success() => {
+                return Ok(resp
+                    .bytes()
+                    .await
+                    .with_context(|| format!("read rule-set body `{url}`"))?
+                    .to_vec());
+            },
+            Ok(resp) => {
+                last_err = Some(anyhow::anyhow!(
+                    "fetch rule-set `{url}` status {}",
+                    resp.status()
+                ));
+            },
+            Err(err) => {
+                last_err = Some(anyhow::Error::new(err).context(format!("fetch rule-set `{url}`")));
+            },
+        }
+    }
+    Err(last_err.unwrap_or_else(|| anyhow::anyhow!("no rule-set urls")))
 }
 
 fn parse_text_rules(text: &str) -> CompiledRuleSet {
@@ -425,7 +586,10 @@ fn parse_text_rules(text: &str) -> CompiledRuleSet {
         domain_keywords,
         ip_cidrs,
         ip_ranges: Vec::new(),
+        domain_set: Default::default(),
+        suffix_set: Default::default(),
     }
+    .finalize()
 }
 
 fn parse_json_rules(rules: &[serde_json::Value]) -> Result<CompiledRuleSet> {
@@ -435,6 +599,8 @@ fn parse_json_rules(rules: &[serde_json::Value]) -> Result<CompiledRuleSet> {
         domain_keywords: Vec::new(),
         ip_cidrs: Vec::new(),
         ip_ranges: Vec::new(),
+        domain_set: Default::default(),
+        suffix_set: Default::default(),
     };
     for rule in rules {
         if let Some(arr) = rule.get("domain").and_then(|v| v.as_array()) {
@@ -458,7 +624,7 @@ fn parse_json_rules(rules: &[serde_json::Value]) -> Result<CompiledRuleSet> {
                 .extend(arr.iter().filter_map(|v| v.as_str().map(str::to_string)));
         }
     }
-    Ok(compiled)
+    Ok(compiled.finalize())
 }
 
 fn rule_outbound(rule: &rsb_config::RouteRule) -> Option<String> {
@@ -599,5 +765,44 @@ mod tests {
             ..Default::default()
         };
         assert_eq!(router.route(&metadata).await.unwrap(), "proxy");
+    }
+
+    #[tokio::test]
+    async fn china_direct_preset_and_private() {
+        let router = RuleRouter::new(
+            RouteOptions {
+                preset: Some("china-direct".into()),
+                direct_tag: Some("direct".into()),
+                final_tag: Some("proxy".into()),
+                ..Default::default()
+            },
+            "proxy".into(),
+        );
+        assert!(router
+            .rules
+            .rules
+            .iter()
+            .any(|r| r.geosite.iter().any(|g| g == "cn")));
+        assert!(router
+            .rules
+            .rules
+            .iter()
+            .any(|r| r.geoip.iter().any(|g| g == "cn")));
+        assert!(router.rules.rules.iter().any(|r| r.ip_is_private));
+
+        let metadata = Metadata {
+            network: Network::Tcp,
+            destination: Some(SocketAddr::from((Ipv4Addr::new(192, 168, 1, 1), 443))),
+            ..Default::default()
+        };
+        assert_eq!(router.route(&metadata).await.unwrap(), "direct");
+    }
+
+    #[test]
+    fn domain_suffix_label_boundary() {
+        assert!(domain_matches_suffix("www.baidu.com", ".baidu.com"));
+        assert!(domain_matches_suffix("baidu.com", "baidu.com"));
+        assert!(!domain_matches_suffix("google.com", "le.com"));
+        assert!(domain_matches_suffix("foo.com.cn", ".cn"));
     }
 }

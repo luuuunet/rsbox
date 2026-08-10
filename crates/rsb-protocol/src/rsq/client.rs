@@ -435,7 +435,11 @@ impl RsqOutbound {
             .await
             .context("open rsq stream")?;
 
-        let target = if let Some(domain) = domain {
+        // Prefer a concrete IPv4/IPv6 from client DnsRouter (detour-clean). Only fall back
+        // to remote hostname resolve when the dial address is still unspecified.
+        let target = if !destination.ip().is_unspecified() {
+            format_address(destination)
+        } else if let Some(domain) = domain {
             format!("{}:{}", domain, destination.port())
         } else {
             format_address(destination)

@@ -871,16 +871,15 @@ pub async fn resolve_destination(
         return Ok(placeholder);
     };
     let port = placeholder.port();
-    // HTTP CONNECT uses 0.0.0.0:port; QUIC outbounds (RSQ/Hy2) carry the hostname.
-    // Skip local DNS here to avoid pollution before the remote side resolves.
-    if placeholder.ip().is_unspecified() {
-        return Ok(SocketAddr::new(placeholder.ip(), port));
-    }
+    // Resolve CONNECT hostnames via DnsRouter (remote-dns + detour when configured).
+    // CN system DNS pollutes www.google.com to FB/Twitter IPs; RSQ server-side resolve
+    // also often picks unreachable anycast. Clean A over 8.8.8.8-via-RSQ + dial by IP.
     let addrs = dns.lookup(host).await?;
     let ip = addrs
         .into_iter()
         .next()
         .context("dns lookup returned no addresses")?;
+    let _ = placeholder; // port already taken; IP replaced by DNS
     Ok(SocketAddr::new(ip, port))
 }
 
@@ -1416,8 +1415,10 @@ async fn dial_tcp_with_client_watch(
 ) -> Result<Option<ProxyConn>> {
     use std::time::Duration;
 
+    // RSQ/RST remote-resolve + QUIC/TCP handshake can exceed 8s on cold paths
+    // (e.g. www.google.com via congested relay). Align with stream_open_timeout.
     let dial = tokio::time::timeout(
-        Duration::from_secs(8),
+        Duration::from_secs(15),
         dialer.dial_tcp(&metadata, dest),
     );
     tokio::pin!(dial);
@@ -1431,7 +1432,7 @@ async fn dial_tcp_with_client_watch(
                 return match result {
                     Ok(Ok(conn)) => Ok(Some(conn)),
                     Ok(Err(e)) => Err(e),
-                    Err(_) => anyhow::bail!("outbound dial timeout after 8s"),
+                    Err(_) => anyhow::bail!("outbound dial timeout after 15s"),
                 };
             }
             _ = tick.tick() => {

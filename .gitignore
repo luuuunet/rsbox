@@ -20,7 +20,11 @@ config.json
 # Runtime data
 data/
 logs/
+cache/
 *.log
+
+# Local secrets / node configs (never commit)
+examples/rst-jp-test.json
 
 # OS
 Thumbs.db

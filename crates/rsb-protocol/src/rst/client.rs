@@ -331,7 +331,9 @@ impl RstOutbound {
             .await
             .context("open rst stream")?;
 
-        let target = if let Some(domain) = domain {
+        let target = if !destination.ip().is_unspecified() {
+            format_address(destination)
+        } else if let Some(domain) = domain {
             format!("{}:{}", domain, destination.port())
         } else {
             format_address(destination)

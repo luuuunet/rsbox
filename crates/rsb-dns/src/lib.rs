@@ -7,13 +7,14 @@ pub use resolved_registry::{register_resolved_service, resolved_dns, unregister_
 use anyhow::{Context, Result};
 use base64::Engine;
 use rsb_config::{DnsOptions, DnsServer};
+use rsb_core::SharedOutboundManager;
 use std::collections::HashMap;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
-use std::sync::{Arc, Mutex};
+use std::sync::{Arc, Mutex, OnceLock};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::lookup_host;
 use tokio_rustls::TlsConnector;
-use tracing::debug;
+use tracing::{debug, warn};
 
 #[derive(Clone)]
 pub struct DnsRouter {
@@ -22,6 +23,8 @@ pub struct DnsRouter {
     rules: Arc<Vec<DnsRule>>,
     fakeip: Option<Arc<FakeIpPool>>,
     reverse_fake: Arc<Mutex<HashMap<IpAddr, String>>>,
+    /// Late-bound so DNS `detour` can send queries through RSQ/RST after outbounds exist.
+    outbounds: Arc<OnceLock<Arc<SharedOutboundManager>>>,
 }
 
 #[derive(Clone)]
@@ -38,6 +41,7 @@ enum DnsTransport {
 struct DnsServerEntry {
     tag: String,
     transport: DnsTransport,
+    detour: Option<String>,
 }
 
 #[derive(Clone)]
@@ -71,6 +75,7 @@ impl DnsRouter {
             servers.push(DnsServerEntry {
                 tag: "fakeip".into(),
                 transport: DnsTransport::FakeIp,
+                detour: None,
             });
         }
         let rules = options.rules.iter().filter_map(parse_rule).collect();
@@ -80,6 +85,14 @@ impl DnsRouter {
             rules: Arc::new(rules),
             fakeip,
             reverse_fake: Arc::new(Mutex::new(HashMap::new())),
+            outbounds: Arc::new(OnceLock::new()),
+        }
+    }
+
+    /// Wire outbound manager so `detour` on DNS servers can tunnel UDP/TCP queries.
+    pub fn set_outbounds(&self, shared: Arc<SharedOutboundManager>) {
+        if self.outbounds.set(shared).is_err() {
+            debug!("dns outbounds already set");
         }
     }
 
@@ -98,9 +111,31 @@ impl DnsRouter {
         }
         let mut pinned = None;
         let mut current = self;
+        let mut attempted = Vec::new();
         loop {
-            let server = current.pick_server(host);
-            if let Some(entry) = server {
+            let preferred = current.pick_server(host).map(|e| e.tag.clone());
+            let mut candidates: Vec<&DnsServerEntry> = Vec::new();
+            if let Some(tag) = preferred.as_ref() {
+                if let Some(entry) = current.servers.iter().find(|s| &s.tag == tag) {
+                    candidates.push(entry);
+                }
+            }
+            for entry in current.servers.iter() {
+                if preferred.as_ref().is_some_and(|t| t == &entry.tag) {
+                    continue;
+                }
+                // Skip fakeip unless explicitly selected by rule.
+                if matches!(entry.transport, DnsTransport::FakeIp) {
+                    continue;
+                }
+                candidates.push(entry);
+            }
+
+            for entry in candidates {
+                if attempted.iter().any(|t| t == &entry.tag) {
+                    continue;
+                }
+                attempted.push(entry.tag.clone());
                 let addrs = match &entry.transport {
                     DnsTransport::FakeIp => {
                         if let Some(pool) = &current.fakeip {
@@ -111,28 +146,58 @@ impl DnsRouter {
                             return Ok(vec![ip]);
                         }
                         Vec::new()
-                    },
-                    DnsTransport::Udp(addr) => query_udp(*addr, host).await.unwrap_or_default(),
-                    DnsTransport::Tcp(addr) => query_tcp(*addr, host).await.unwrap_or_default(),
+                    }
+                    DnsTransport::Udp(addr) => {
+                        match query_udp(*addr, host, entry.detour.as_deref(), current.outbounds.get())
+                            .await
+                        {
+                            Ok(v) => v,
+                            Err(err) => {
+                                warn!(
+                                    server = %entry.tag,
+                                    detour = ?entry.detour,
+                                    error = %err,
+                                    "dns udp query failed"
+                                );
+                                Vec::new()
+                            }
+                        }
+                    }
+                    DnsTransport::Tcp(addr) => {
+                        match query_tcp(*addr, host, entry.detour.as_deref(), current.outbounds.get())
+                            .await
+                        {
+                            Ok(v) => v,
+                            Err(err) => {
+                                warn!(server = %entry.tag, error = %err, "dns tcp query failed");
+                                Vec::new()
+                            }
+                        }
+                    }
                     DnsTransport::Tls { addr, sni } => {
                         query_dot(*addr, sni, host).await.unwrap_or_default()
-                    },
+                    }
                     DnsTransport::Https(url) => query_doh(url, host).await.unwrap_or_default(),
                     DnsTransport::Resolved(tag) => {
                         if let Some(router) = resolved_dns(tag) {
                             pinned = Some(router);
                             current = pinned.as_ref().expect("pinned").as_ref();
-                            continue;
+                            attempted.clear();
+                            break;
                         }
                         Vec::new()
-                    },
+                    }
                 };
                 if !addrs.is_empty() {
                     return Ok(apply_dns_strategy(addrs, current.options.as_ref()));
                 }
             }
+            if pinned.is_some() && attempted.is_empty() {
+                continue;
+            }
             break;
         }
+        warn!(host, "dns upstream empty; falling back to system resolver");
         let mut addrs = Vec::new();
         for resolved in lookup_host(format!("{host}:0")).await? {
             addrs.push(resolved.ip());
@@ -158,8 +223,14 @@ impl DnsRouter {
                     continue;
                 }
                 let result = match &server.transport {
-                    DnsTransport::Udp(addr) => query_udp_raw(*addr, query).await,
-                    DnsTransport::Tcp(addr) => query_tcp_raw(*addr, query).await,
+                    DnsTransport::Udp(addr) => {
+                        query_udp_raw(*addr, query, server.detour.as_deref(), current.outbounds.get())
+                            .await
+                    }
+                    DnsTransport::Tcp(addr) => {
+                        query_tcp_raw(*addr, query, server.detour.as_deref(), current.outbounds.get())
+                            .await
+                    }
                     DnsTransport::Tls { addr, sni } => query_dot_raw(*addr, sni, query).await,
                     DnsTransport::Https(url) => query_doh_raw(url, query).await,
                     DnsTransport::FakeIp => {
@@ -182,29 +253,45 @@ impl DnsRouter {
         }
     }
 
-    fn pick_server(&self, host: &str) -> Option<&DnsServerEntry> {
+fn pick_server(&self, host: &str) -> Option<&DnsServerEntry> {
+        let host_l = host.to_ascii_lowercase();
         for rule in self.rules.iter() {
-            if rule
-                .domain_suffix
-                .iter()
-                .any(|s| host.ends_with(s.trim_start_matches('*').trim_start_matches('.')))
+            if rule.domain_suffix.iter().any(|s| domain_matches_suffix(&host_l, s))
+                || rule.domain_keyword.iter().any(|k| host_l.contains(&k.to_ascii_lowercase()))
             {
                 if let Some(entry) = self.servers.iter().find(|s| s.tag == rule.server_tag) {
                     return Some(entry);
                 }
             }
-            if rule.domain_keyword.iter().any(|k| host.contains(k)) {
-                if let Some(entry) = self.servers.iter().find(|s| s.tag == rule.server_tag) {
-                    return Some(entry);
-                }
-            }
         }
-        self.servers.first()
+        self.servers
+            .iter()
+            .find(|s| {
+                self.options
+                    .as_ref()
+                    .and_then(|o| o.final_tag.as_deref())
+                    .is_some_and(|t| t == s.tag)
+            })
+            .or_else(|| self.servers.first())
     }
 
     pub fn options(&self) -> Option<&DnsOptions> {
         self.options.as_ref()
     }
+}
+
+fn domain_matches_suffix(domain: &str, suffix: &str) -> bool {
+    let s = suffix
+        .trim_start_matches('*')
+        .trim_start_matches('.')
+        .trim();
+    if s.is_empty() {
+        return false;
+    }
+    domain.eq_ignore_ascii_case(s)
+        || domain.len() > s.len()
+            && domain.as_bytes().get(domain.len() - s.len() - 1) == Some(&b'.')
+            && domain[domain.len() - s.len()..].eq_ignore_ascii_case(s)
 }
 
 fn apply_dns_strategy(mut addrs: Vec<IpAddr>, options: Option<&DnsOptions>) -> Vec<IpAddr> {
@@ -231,6 +318,19 @@ fn apply_dns_strategy(mut addrs: Vec<IpAddr>, options: Option<&DnsOptions>) -> V
 
 fn parse_server(raw: &DnsServer, index: usize) -> Result<DnsServerEntry> {
     let tag = raw.tag.clone().unwrap_or_else(|| index.to_string());
+    let detour = raw
+        .detour
+        .clone()
+        .or_else(|| {
+            raw.raw
+                .get("detour")
+                .and_then(|v| v.as_str())
+                .map(str::to_string)
+        })
+        .filter(|s| !s.is_empty());
+    if let Some(ref d) = detour {
+        debug!(tag = %tag, detour = %d, "dns server parsed with detour");
+    }
     if raw.raw.get("type").and_then(|v| v.as_str()) == Some("resolved") {
         let service = raw
             .raw
@@ -241,12 +341,14 @@ fn parse_server(raw: &DnsServer, index: usize) -> Result<DnsServerEntry> {
         return Ok(DnsServerEntry {
             tag,
             transport: DnsTransport::Resolved(service),
+            detour,
         });
     }
     if raw.raw.get("type").and_then(|v| v.as_str()) == Some("local") {
         return Ok(DnsServerEntry {
             tag,
             transport: DnsTransport::Resolved("local".into()),
+            detour,
         });
     }
     let address = raw
@@ -258,10 +360,15 @@ fn parse_server(raw: &DnsServer, index: usize) -> Result<DnsServerEntry> {
         return Ok(DnsServerEntry {
             tag,
             transport: DnsTransport::FakeIp,
+            detour,
         });
     }
     let transport = parse_dns_transport(address)?;
-    Ok(DnsServerEntry { tag, transport })
+    Ok(DnsServerEntry {
+        tag,
+        transport,
+        detour,
+    })
 }
 
 fn parse_dns_transport(address: &str) -> Result<DnsTransport> {
@@ -346,13 +453,48 @@ fn parse_rule(raw: &serde_json::Value) -> Option<DnsRule> {
     })
 }
 
-async fn query_udp(server: SocketAddr, host: &str) -> Result<Vec<IpAddr>> {
+async fn query_udp(
+    server: SocketAddr,
+    host: &str,
+    detour: Option<&str>,
+    outbounds: Option<&Arc<SharedOutboundManager>>,
+) -> Result<Vec<IpAddr>> {
     let query = build_query(host, false);
-    let bytes = query_udp_raw(server, &query).await?;
+    let bytes = query_udp_raw(server, &query, detour, outbounds).await?;
     parse_response(&bytes)
 }
 
-async fn query_udp_raw(server: SocketAddr, query: &[u8]) -> Result<Vec<u8>> {
+async fn query_udp_raw(
+    server: SocketAddr,
+    query: &[u8],
+    detour: Option<&str>,
+    outbounds: Option<&Arc<SharedOutboundManager>>,
+) -> Result<Vec<u8>> {
+    if let Some(tag) = detour {
+        let shared = outbounds.with_context(|| {
+            format!("dns detour `{tag}` set but outbounds not wired")
+        })?;
+        debug!(%server, detour = tag, "dns udp via detour");
+        let sock = shared
+            .get()?
+            .get(tag)?
+            .dial_udp(server)
+            .await
+            .with_context(|| format!("dns detour dial_udp via {tag}"))?;
+        sock.send_to(query, server)
+            .await
+            .context("dns detour udp send")?;
+        let mut buf = vec![0u8; 4096];
+        let (n, _) = tokio::time::timeout(
+            std::time::Duration::from_secs(5),
+            sock.recv_from(&mut buf),
+        )
+        .await
+        .context("dns detour udp timeout")??;
+        return Ok(buf[..n].to_vec());
+    }
+
+    debug!(%server, "dns udp direct (no detour)");
     let socket = tokio::net::UdpSocket::bind("0.0.0.0:0").await?;
     socket.send_to(query, server).await?;
     let mut buf = vec![0u8; 4096];
@@ -365,14 +507,37 @@ async fn query_udp_raw(server: SocketAddr, query: &[u8]) -> Result<Vec<u8>> {
     Ok(buf[..n].to_vec())
 }
 
-async fn query_tcp(server: SocketAddr, host: &str) -> Result<Vec<IpAddr>> {
+async fn query_tcp(
+    server: SocketAddr,
+    host: &str,
+    detour: Option<&str>,
+    outbounds: Option<&Arc<SharedOutboundManager>>,
+) -> Result<Vec<IpAddr>> {
     let query = build_query(host, false);
-    let bytes = query_tcp_raw(server, &query).await?;
+    let bytes = query_tcp_raw(server, &query, detour, outbounds).await?;
     parse_response(&bytes)
 }
 
-async fn query_tcp_raw(server: SocketAddr, query: &[u8]) -> Result<Vec<u8>> {
-    let mut stream = tokio::net::TcpStream::connect(server).await?;
+async fn query_tcp_raw(
+    server: SocketAddr,
+    query: &[u8],
+    detour: Option<&str>,
+    outbounds: Option<&Arc<SharedOutboundManager>>,
+) -> Result<Vec<u8>> {
+    use tokio::io::AsyncWriteExt as _;
+
+    let mut stream: rsb_core::ProxyConn = if let Some(tag) = detour {
+        let shared = outbounds.context("dns detour set but outbounds not wired")?;
+        shared
+            .get()?
+            .get(tag)?
+            .dial_tcp(server, None)
+            .await
+            .with_context(|| format!("dns detour dial_tcp via {tag}"))?
+    } else {
+        rsb_core::tcp_stream(tokio::net::TcpStream::connect(server).await?)
+    };
+
     let len = (query.len() as u16).to_be_bytes();
     stream.write_all(&len).await?;
     stream.write_all(query).await?;

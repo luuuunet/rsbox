@@ -26,47 +26,86 @@ impl RuleSetCache {
         self.base.join(format!("{}.{}", sanitize_tag(tag), ext))
     }
 
+    #[allow(dead_code)]
     pub async fn read_or_fetch(&self, tag: &str, url: &str, binary: bool) -> Result<Vec<u8>> {
-        let path = self.file_path(tag, binary);
-        let cached = if path.is_file() {
-            tokio::fs::read(&path)
-                .await
-                .with_context(|| format!("read cached rule-set `{}`", path.display()))
-                .ok()
-        } else {
-            None
-        };
+        self.read_or_fetch_urls(tag, &[url.to_string()], binary).await
+    }
 
-        match reqwest::get(url).await {
-            Ok(resp) => {
-                let bytes = resp
-                    .bytes()
-                    .await
-                    .with_context(|| format!("read rule-set body `{url}`"))?
-                    .to_vec();
-                if let Some(parent) = path.parent() {
-                    tokio::fs::create_dir_all(parent).await.ok();
-                }
-                if let Err(err) = tokio::fs::write(&path, &bytes).await {
-                    tracing::warn!(
+    /// Try each URL in order; prefer on-disk cache when present (bundled / prior extract).
+    pub async fn read_or_fetch_urls(
+        &self,
+        tag: &str,
+        urls: &[String],
+        binary: bool,
+    ) -> Result<Vec<u8>> {
+        anyhow::ensure!(!urls.is_empty(), "no rule-set urls for `{tag}`");
+        let path = self.file_path(tag, binary);
+        if path.is_file() {
+            match tokio::fs::read(&path).await {
+                Ok(bytes) if bytes.len() >= 64 => {
+                    tracing::debug!(
                         path = %path.display(),
-                        error = %err,
-                        "failed to write rule-set cache"
+                        tag,
+                        len = bytes.len(),
+                        "using local rule-set cache"
                     );
-                } else {
-                    tracing::debug!(path = %path.display(), tag, "rule-set cache updated");
-                }
-                Ok(bytes)
-            },
-            Err(err) => {
-                if let Some(bytes) = cached {
-                    tracing::warn!(tag, %url, error = %err, "rule-set fetch failed, using cache");
-                    Ok(bytes)
-                } else {
-                    Err(err).with_context(|| format!("fetch rule-set `{url}`"))
-                }
-            },
+                    return Ok(bytes);
+                },
+                Ok(_) => {
+                    tracing::warn!(path = %path.display(), tag, "local rule-set too small, refetch");
+                },
+                Err(err) => {
+                    tracing::warn!(path = %path.display(), tag, error = %err, "read local rule-set failed");
+                },
+            }
         }
+
+        let mut last_err: Option<anyhow::Error> = None;
+        for url in urls {
+            match reqwest::get(url).await {
+                Ok(resp) if resp.status().is_success() => {
+                    match resp.bytes().await {
+                        Ok(bytes) => {
+                            let bytes = bytes.to_vec();
+                            if let Some(parent) = path.parent() {
+                                tokio::fs::create_dir_all(parent).await.ok();
+                            }
+                            if let Err(err) = tokio::fs::write(&path, &bytes).await {
+                                tracing::warn!(
+                                    path = %path.display(),
+                                    error = %err,
+                                    "failed to write rule-set cache"
+                                );
+                            } else {
+                                tracing::debug!(
+                                    path = %path.display(),
+                                    tag,
+                                    %url,
+                                    "rule-set cache updated"
+                                );
+                            }
+                            return Ok(bytes);
+                        },
+                        Err(err) => {
+                            last_err = Some(anyhow::Error::new(err).context(format!(
+                                "read rule-set body `{url}`"
+                            )));
+                        },
+                    }
+                },
+                Ok(resp) => {
+                    last_err = Some(anyhow::anyhow!(
+                        "fetch rule-set `{url}` status {}",
+                        resp.status()
+                    ));
+                },
+                Err(err) => {
+                    last_err = Some(anyhow::Error::new(err).context(format!("fetch rule-set `{url}`")));
+                },
+            }
+        }
+
+        Err(last_err.unwrap_or_else(|| anyhow::anyhow!("fetch rule-set `{tag}` failed")))
     }
 }
 

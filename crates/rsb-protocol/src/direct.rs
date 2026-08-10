@@ -33,8 +33,27 @@ impl Outbound for DirectOutbound {
     async fn dial_tcp(
         &self,
         destination: SocketAddr,
-        _domain: Option<&str>,
+        domain: Option<&str>,
     ) -> Result<ProxyConn, BoxError> {
+        let destination = if destination.ip().is_unspecified() {
+            let host = domain.ok_or_else(|| {
+                anyhow::anyhow!("direct outbound needs a domain when destination IP is unspecified")
+            })?;
+            let addrs: Vec<SocketAddr> = tokio::net::lookup_host((host, destination.port()))
+                .await
+                .map_err(|e| anyhow::anyhow!("direct dns lookup for `{host}` failed: {e}"))?
+                .collect();
+            addrs
+                .iter()
+                .copied()
+                .find(|a| a.is_ipv4())
+                .or_else(|| addrs.into_iter().next())
+                .ok_or_else(|| {
+                    anyhow::anyhow!("direct dns lookup for `{host}` returned no addresses")
+                })?
+        } else {
+            destination
+        };
         let stream = rsb_core::tcp_connect_via(destination, self.bind_interface.as_deref()).await?;
         Ok(tcp_stream(stream))
     }

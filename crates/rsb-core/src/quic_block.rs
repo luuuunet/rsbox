@@ -70,10 +70,12 @@ fn install() -> Result<QuicBlockGuard> {
         let _ = remove_legacy_firewall_rules();
     }
     let mut restores = Vec::new();
-    for path in chromium_local_state_paths() {
-        if !path.is_file() {
-            continue;
-        }
+    let mut already_ok = 0usize;
+    let paths = chromium_local_state_paths();
+    if paths.is_empty() {
+        anyhow::bail!("no Chromium Local State found (is Chrome/Edge/Opera installed?)");
+    }
+    for path in paths {
         match patch_local_state(&path) {
             Ok(Some(prev)) => {
                 tracing::info!(path = %path.display(), "block_quic: enable-quic@2 set in Local State");
@@ -83,6 +85,7 @@ fn install() -> Result<QuicBlockGuard> {
                 });
             }
             Ok(None) => {
+                already_ok += 1;
                 tracing::debug!(path = %path.display(), "block_quic: already disabled");
             }
             Err(err) => {
@@ -90,29 +93,44 @@ fn install() -> Result<QuicBlockGuard> {
             }
         }
     }
-    if restores.is_empty() {
-        anyhow::bail!("no Chromium Local State patched (is Chrome/Edge installed?)");
+    // 已经全部是禁用状态也算成功（避免每次启动刷 WARN）。
+    if restores.is_empty() && already_ok == 0 {
+        anyhow::bail!("no Chromium Local State patched (is Chrome/Edge/Opera installed?)");
     }
-    tracing::warn!(
-        "block_quic: fully quit and reopen Chrome/Edge once so disable-QUIC takes effect"
-    );
+    if !restores.is_empty() {
+        tracing::warn!(
+            "block_quic: fully quit and reopen Chrome/Edge/Opera once so disable-QUIC takes effect"
+        );
+    }
     Ok(QuicBlockGuard { restores })
 }
 
 fn chromium_local_state_paths() -> Vec<PathBuf> {
     let mut out = Vec::new();
-    let Some(local) = std::env::var_os("LOCALAPPDATA").map(PathBuf::from) else {
-        return out;
-    };
-    let candidates = [
-        local.join(r"Google\Chrome\User Data\Local State"),
-        local.join(r"Google\Chrome Beta\User Data\Local State"),
-        local.join(r"Microsoft\Edge\User Data\Local State"),
-        local.join(r"Microsoft\Edge Beta\User Data\Local State"),
-        local.join(r"BraveSoftware\Brave-Browser\User Data\Local State"),
-        local.join(r"Chromium\User Data\Local State"),
-        local.join(r"Vivaldi\User Data\Local State"),
-    ];
+    let local = std::env::var_os("LOCALAPPDATA").map(PathBuf::from);
+    let roaming = std::env::var_os("APPDATA").map(PathBuf::from);
+
+    let mut candidates: Vec<PathBuf> = Vec::new();
+    if let Some(local) = local {
+        candidates.extend([
+            local.join(r"Google\Chrome\User Data\Local State"),
+            local.join(r"Google\Chrome Beta\User Data\Local State"),
+            local.join(r"Microsoft\Edge\User Data\Local State"),
+            local.join(r"Microsoft\Edge Beta\User Data\Local State"),
+            local.join(r"BraveSoftware\Brave-Browser\User Data\Local State"),
+            local.join(r"Chromium\User Data\Local State"),
+            local.join(r"Vivaldi\User Data\Local State"),
+        ]);
+    }
+    // Opera 把 Local State 放在 Roaming，不关 QUIC 时会绕过系统代理。
+    if let Some(roaming) = roaming {
+        candidates.extend([
+            roaming.join(r"Opera Software\Opera Stable\Local State"),
+            roaming.join(r"Opera Software\Opera GX Stable\Local State"),
+            roaming.join(r"Opera Software\Opera Next\Local State"),
+        ]);
+    }
+
     for p in candidates {
         if p.is_file() {
             out.push(p);

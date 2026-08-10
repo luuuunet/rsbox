@@ -186,30 +186,47 @@ fn succinct_keys(leaves: &[u64], label_bitmap: &[u64], labels: &[u8]) -> Vec<Str
         leaves: &[u64],
         label_bitmap: &[u64],
         labels: &[u8],
-        labels_base: &[u8],
         current: &mut Vec<u8>,
         result: &mut Vec<String>,
+        depth: usize,
     ) {
+        // Guard against corrupt / unsupported succinct tries (do not panic).
+        if depth > 4096 || result.len() > 500_000 {
+            return;
+        }
         if get_bit(leaves, node_id) != 0 {
             result.push(String::from_utf8_lossy(current).into_owned());
         }
+        let mut steps = 0usize;
         loop {
+            steps += 1;
+            if steps > 100_000 {
+                return;
+            }
+            if !bit_index_in_range(label_bitmap, bm_idx) {
+                return;
+            }
             if get_bit(label_bitmap, bm_idx) != 0 {
                 return;
             }
-            let next_label = labels[bm_idx - node_id];
+            let Some(label_off) = bm_idx.checked_sub(node_id) else {
+                return;
+            };
+            let Some(&next_label) = labels.get(label_off) else {
+                return;
+            };
             current.push(next_label);
             let next_node = count_zeros(label_bitmap, bm_idx + 1);
-            let next_bm = select_ith_one(label_bitmap, next_node - 1) + 1;
+            let next_bm = select_ith_one(label_bitmap, next_node.saturating_sub(1)).saturating_add(1);
             traverse(
                 next_node,
                 next_bm,
                 leaves,
                 label_bitmap,
                 labels,
-                labels_base,
                 current,
                 result,
+                depth + 1,
             );
             current.pop();
             bm_idx += 1;
@@ -221,24 +238,38 @@ fn succinct_keys(leaves: &[u64], label_bitmap: &[u64], labels: &[u8]) -> Vec<Str
         leaves,
         label_bitmap,
         labels,
-        labels,
         &mut current,
         &mut result,
+        0,
     );
     result
 }
 
+fn bit_index_in_range(words: &[u64], i: usize) -> bool {
+    !words.is_empty() && (i >> 6) < words.len()
+}
+
 fn get_bit(words: &[u64], i: usize) -> u64 {
-    words[i >> 6] & (1 << (i & 63))
+    match words.get(i >> 6) {
+        Some(word) => word & (1u64 << (i & 63)),
+        None => 0,
+    }
 }
 
 fn count_zeros(bm: &[u64], i: usize) -> usize {
     let mut ones = 0usize;
     for word_i in 0..=(i >> 6) {
         let end = if word_i == i >> 6 { i & 63 } else { 64 };
-        ones += (words_get(bm, word_i) & ((1u64 << end) - 1)).count_ones() as usize;
+        let mask = if end == 64 {
+            u64::MAX
+        } else if end == 0 {
+            0
+        } else {
+            (1u64 << end) - 1
+        };
+        ones += (words_get(bm, word_i) & mask).count_ones() as usize;
     }
-    i - ones
+    i.saturating_sub(ones)
 }
 
 fn words_get(words: &[u64], i: usize) -> u64 {
@@ -339,5 +370,54 @@ fn read_uvarint(reader: &mut Cursor<Vec<u8>>) -> Result<u64> {
         }
         x |= u64::from(b & 0x7f) << s;
         s += 7;
+    }
+}
+
+#[cfg(test)]
+mod srs_embed_tests {
+    use super::*;
+
+    #[test]
+    fn parse_geoip_cn_no_panic() {
+        let data = include_bytes!("../assets/geoip-cn.srs");
+        let compiled = parse_srs(data).expect("geoip-cn");
+        assert!(compiled.ip_cidrs.len() + compiled.ip_ranges.len() > 100);
+    }
+
+    #[test]
+    fn parse_geosite_cn_no_panic() {
+        let data = include_bytes!("../assets/geosite-cn.srs");
+        let compiled = parse_srs(data).expect("geosite-cn");
+        // Domain succinct may be partial on some builds; must never panic.
+        println!(
+            "geosite domains={} suffixes={} keywords={}",
+            compiled.domains.len(),
+            compiled.domain_suffixes.len(),
+            compiled.domain_keywords.len()
+        );
+    }
+
+    #[test]
+    fn dump_geosite_cn_txt() {
+        use std::path::Path;
+        let data = include_bytes!("../assets/geosite-cn.srs");
+        let compiled = parse_srs(data).expect("geosite-cn");
+        let mut lines = Vec::new();
+        for d in &compiled.domains {
+            lines.push(d.clone());
+        }
+        for s in &compiled.domain_suffixes {
+            if s.starts_with('.') {
+                lines.push(format!("*{s}"));
+            } else {
+                lines.push(format!("*.{s}"));
+            }
+        }
+        lines.sort();
+        lines.dedup();
+        let out = Path::new(env!("CARGO_MANIFEST_DIR")).join("assets/geosite-cn.txt");
+        std::fs::write(&out, lines.join("\n")).unwrap();
+        println!("wrote {} lines to {}", lines.len(), out.display());
+        assert!(lines.len() > 1000);
     }
 }

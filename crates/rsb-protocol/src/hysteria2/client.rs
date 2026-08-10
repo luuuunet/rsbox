@@ -509,7 +509,9 @@ impl Hysteria2Outbound {
             .await
             .context("open hy2 stream")?;
 
-        let target = if let Some(domain) = domain {
+        let target = if !destination.ip().is_unspecified() {
+            format_address(destination)
+        } else if let Some(domain) = domain {
             format!("{}:{}", domain, destination.port())
         } else {
             format_address(destination)

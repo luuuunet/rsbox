@@ -37,6 +37,8 @@ impl RsBox {
         let outbounds = build_outbounds(&options, ctx.clone(), shared.clone(), &controller)?;
         let outbound = Arc::new(OutboundManager::new(outbounds, default_tag.clone())?);
         shared.set(outbound.clone());
+        // DNS servers with `detour` (e.g. 8.8.8.8 via RSQ) need outbounds after build.
+        ctx.dns.set_outbounds(shared.clone());
 
         let mut router = RuleRouter::new(options.route.clone().unwrap_or_default(), default_tag);
         router.load_rule_sets().await?;

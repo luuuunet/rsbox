@@ -18,6 +18,7 @@
 | [config-test-shadowtls-ss-anytls.json](config-test-shadowtls-ss-anytls.json) | 协议联调 | 选择器切换 ST+SS / AnyTLS |
 | [TEST-PROTOCOLS.md](TEST-PROTOCOLS.md) | 联调说明 | 占位符、服务端、测试脚本 |
 | [config-routing.json](config-routing.json) | 智能路由 | 基于规则的流量分流 |
+| [config-china-direct.json](config-china-direct.json) | 国内直连预设 | `route.preset: china-direct`（geosite-cn / geoip-cn） |
 
 ## 🚀 快速开始
 
