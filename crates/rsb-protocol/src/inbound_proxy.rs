@@ -5,19 +5,61 @@ use rsb_core::{BoxError, Dialer, Inbound, Metadata, Network, ProxyConn};
 use rsb_dns::DnsRouter;
 use serde_json::Value;
 use std::net::SocketAddr;
+use std::sync::atomic::{AtomicU64, AtomicUsize, Ordering};
 use std::sync::Arc;
 use tokio::io::{AsyncBufReadExt, AsyncReadExt, AsyncWriteExt, BufReader};
 use tokio::net::{TcpListener, TcpStream};
 
+/// 仅限制「握手中」并发（读 CONNECT/SOCKS 头）。拨号/转发不再占此许可。
 const MAX_CONCURRENT_INBOUND: usize = 256;
-const INBOUND_HANDLER_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(120);
-const INBOUND_ACQUIRE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
-const INBOUND_DRAIN_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(2);
+/// 含 dial+relay 的总活跃连接硬顶。允许大量并发，但禁止无界堆积导致假死。
+const MAX_ACTIVE_CONNECTIONS: usize = 512;
+/// outbound dial 全局限流（仅代理链路）。直连绝不能进此队列，
+/// 否则节点卡死时百度等国内站 CONNECT 也会被拖成「假死」。
+const MAX_CONCURRENT_DIALS: usize = 48;
+const INBOUND_ACQUIRE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(3);
+/// 读完代理请求头的上限；超时必须释许可，否则 CLOSE_WAIT/假死。
+const HANDSHAKE_IO_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+const INBOUND_DRAIN_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(200);
 /// Absolute ceiling for one relay; idle/EOF should finish much sooner.
-const RELAY_TOTAL_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(300);
-/// No bytes either direction → tear down (avoids parked copy + CLOSE_WAIT).
-const RELAY_IDLE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(45);
+const RELAY_TOTAL_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(600);
+/// 对齐 Clash/clash-rs 常见策略：双向约 60s 无字节则拆隧道。
+/// 视频/直播持续有流量会不断刷新；闲置连接不长期占用（减轻 CLOSE_WAIT）。
+const RELAY_IDLE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
+/// 写方向半死远端更快失败，避免卡在 write 上堆 CLOSE_WAIT。
+const RELAY_WRITE_IDLE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
+const OUTBOUND_DIAL_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+const PROXY_DIAL_ACQUIRE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(2);
+const RESOLVE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(3);
 const RELAY_BUF_SIZE: usize = 16 * 1024;
+
+/// 连接生命周期计数：accept→close 全程持有，Drop 时自动 -1。
+struct ActiveConnGuard {
+    counter: Arc<AtomicUsize>,
+}
+
+impl Drop for ActiveConnGuard {
+    fn drop(&mut self) {
+        self.counter.fetch_sub(1, Ordering::Relaxed);
+    }
+}
+
+fn try_acquire_active(counter: &Arc<AtomicUsize>) -> Option<ActiveConnGuard> {
+    loop {
+        let cur = counter.load(Ordering::Relaxed);
+        if cur >= MAX_ACTIVE_CONNECTIONS {
+            return None;
+        }
+        if counter
+            .compare_exchange(cur, cur + 1, Ordering::AcqRel, Ordering::Relaxed)
+            .is_ok()
+        {
+            return Some(ActiveConnGuard {
+                counter: Arc::clone(counter),
+            });
+        }
+    }
+}
 
 // ✅ 异步清理模块（内联）
 mod async_cleanup {
@@ -355,9 +397,9 @@ impl Inbound for MixedInbound {
         let tag = self.tag.clone();
         let kind = self.kind.clone();
         let mode = self.mode;
-        let sniff = self.sniff;
-        let sniff_override = self.sniff_override_destination;
         let concurrency = Arc::new(tokio::sync::Semaphore::new(MAX_CONCURRENT_INBOUND));
+        let active_conns = Arc::new(AtomicUsize::new(0));
+        let accept_count = Arc::new(AtomicU64::new(0));
         let mut shutdown = self.shutdown.subscribe();
         let handle = tokio::spawn(async move {
             loop {
@@ -366,8 +408,35 @@ impl Inbound for MixedInbound {
                         if *shutdown.borrow() { break; }
                     }
                     accept = listener.accept() => {
-                        let Ok((mut stream, peer)) = accept else { break };
+                        let (mut stream, peer) = match accept {
+                            Ok(v) => v,
+                            Err(err) => {
+                                // 偶发 accept 失败不应毁掉整个 inbound（旧逻辑 break → 端口假死）。
+                                tracing::warn!(error = %err, "inbound accept failed, retrying");
+                                tokio::time::sleep(std::time::Duration::from_millis(50)).await;
+                                continue;
+                            }
+                        };
                         tune_accepted_stream(&stream);
+
+                        // 总活跃连接硬顶：超额立刻 RST，避免 ESTABLISHED/CLOSE_WAIT 无界。
+                        let Some(active_guard) = try_acquire_active(&active_conns) else {
+                            let n = active_conns.load(Ordering::Relaxed);
+                            tracing::debug!(active = n, "inbound active cap hit, RST");
+                            abort_inbound_socket(&stream);
+                            drop(stream);
+                            continue;
+                        };
+
+                        let n = accept_count.fetch_add(1, Ordering::Relaxed) + 1;
+                        if n % 64 == 0 {
+                            tracing::debug!(
+                                accepts = n,
+                                active = active_conns.load(Ordering::Relaxed),
+                                "inbound connection stats"
+                            );
+                        }
+
                         let dialer = dialer.clone();
                         let dns = dns.clone();
                         let tag = tag.clone();
@@ -375,13 +444,15 @@ impl Inbound for MixedInbound {
                         let concurrency = concurrency.clone();
 
                         tokio::spawn(async move {
+                            // 持有至任务结束，Drop 时释放活跃计数。
+                            let _active_guard = active_guard;
+
                             let Ok(permit) = tokio::time::timeout(
                                 INBOUND_ACQUIRE_TIMEOUT,
                                 concurrency.acquire_owned(),
                             )
                             .await
                             else {
-                                let mut stream = stream;
                                 let _ = send_http_error(
                                     &mut stream,
                                     503,
@@ -398,30 +469,29 @@ impl Inbound for MixedInbound {
                             };
                             let mut handshake_permit = Some(permit);
 
-                            let result = tokio::time::timeout(
-                                INBOUND_HANDLER_TIMEOUT,
-                                handle_client(
-                                    &mut stream,
-                                    peer,
-                                    &tag,
-                                    &kind,
-                                    mode,
-                                    dialer,
-                                    dns,
-                                    &mut handshake_permit,
-                                ),
+                            // 不再对整段 relay 套 120s 总超时：长视频会被误杀，
+                            // 且取消路径易留下 CLOSE_WAIT。握手/空闲由内部超时负责。
+                            let result = handle_client(
+                                &mut stream,
+                                peer,
+                                &tag,
+                                &kind,
+                                mode,
+                                dialer,
+                                dns,
+                                &mut handshake_permit,
                             )
                             .await;
 
+                            // 确保握手许可一定释放（错误路径也可能未 take）。
+                            drop(handshake_permit);
+
                             match result {
-                                Ok(Ok(())) => {
+                                Ok(()) => {
                                     tracing::trace!("Connection completed successfully");
                                 }
-                                Ok(Err(err)) => {
+                                Err(err) => {
                                     tracing::debug!(error = ?err, "proxy client failed");
-                                }
-                                Err(_) => {
-                                    tracing::debug!("Connection timeout after handler limit");
                                 }
                             }
 
@@ -537,21 +607,27 @@ async fn handle_socks5(
     handshake_permit: &mut Option<tokio::sync::OwnedSemaphorePermit>,
 ) -> Result<()> {
     let mut header = [0u8; 2];
-    stream.read_exact(&mut header).await?;
+    tokio::time::timeout(HANDSHAKE_IO_TIMEOUT, stream.read_exact(&mut header))
+        .await
+        .map_err(|_| anyhow::anyhow!("socks header timeout"))??;
     if header[0] != 0x05 {
         anyhow::bail!("invalid socks version");
     }
     let mut methods = vec![0u8; header[1] as usize];
-    stream.read_exact(&mut methods).await?;
+    tokio::time::timeout(HANDSHAKE_IO_TIMEOUT, stream.read_exact(&mut methods))
+        .await
+        .map_err(|_| anyhow::anyhow!("socks methods timeout"))??;
     stream.write_all(&[0x05, 0x00]).await?;
     let mut req = [0u8; 4];
-    stream.read_exact(&mut req).await?;
-    let (dest, domain) = read_socks_addr(stream, req[3]).await?;
-    stream
-        .write_all(&[0x05, 0x00, 0x00, 0x01, 0, 0, 0, 0, 0, 0])
-        .await?;
+    tokio::time::timeout(HANDSHAKE_IO_TIMEOUT, stream.read_exact(&mut req))
+        .await
+        .map_err(|_| anyhow::anyhow!("socks request timeout"))??;
+    let (dest, domain) = tokio::time::timeout(HANDSHAKE_IO_TIMEOUT, read_socks_addr(stream, req[3]))
+        .await
+        .map_err(|_| anyhow::anyhow!("socks addr timeout"))??;
+    // 先拨号再回成功：节点/直连失败时不要让浏览器以为隧道已通。
     release_handshake_permit(handshake_permit);
-    dial_and_relay(
+    let Some(remote) = dial_tcp_only(
         stream,
         peer,
         inbound_tag,
@@ -561,7 +637,14 @@ async fn handle_socks5(
         dest,
         domain,
     )
-    .await
+    .await?
+    else {
+        return Ok(());
+    };
+    stream
+        .write_all(&[0x05, 0x00, 0x00, 0x01, 0, 0, 0, 0, 0, 0])
+        .await?;
+    relay_proxy(stream, remote).await
 }
 
 async fn read_socks_addr(stream: &mut TcpStream, atyp: u8) -> Result<(SocketAddr, Option<String>)> {
@@ -605,24 +688,26 @@ async fn handle_http_connect(
     dns: Arc<DnsRouter>,
     handshake_permit: &mut Option<tokio::sync::OwnedSemaphorePermit>,
 ) -> Result<()> {
-    // ✅ 使用 BufReader 精确读取 HTTP 请求，完全模仿 sing-box
     let mut reader = BufReader::new(stream);
 
-    // 读取请求行
     let mut request_line = String::new();
-    reader.read_line(&mut request_line).await?;
+    tokio::time::timeout(HANDSHAKE_IO_TIMEOUT, reader.read_line(&mut request_line))
+        .await
+        .map_err(|_| anyhow::anyhow!("http request line timeout"))??;
     let mut full_request = request_line.clone();
 
     let mut parts = request_line.trim().split_whitespace();
     let method = parts.next().context("no method")?;
     let target = parts.next().context("no target")?;
 
-    tracing::info!("🔍 HTTP request: method={}, target={}", method, target);
+    tracing::debug!(method = %method, target = %target, "HTTP proxy request");
 
-    // 读取所有头部直到空行
+    // 读取所有头部直到空行（必须限时，否则占满握手许可 → 端口假死）
     loop {
         let mut line = String::new();
-        reader.read_line(&mut line).await?;
+        tokio::time::timeout(HANDSHAKE_IO_TIMEOUT, reader.read_line(&mut line))
+            .await
+            .map_err(|_| anyhow::anyhow!("http header timeout"))??;
         if line == "\r\n" || line == "\n" || line.is_empty() {
             full_request.push_str("\r\n");
             break;
@@ -630,75 +715,57 @@ async fn handle_http_connect(
         full_request.push_str(&line);
     }
 
-    tracing::info!(
-        "🔍 HTTP headers parsed, reader.buffer().len()={}",
-        reader.buffer().len()
-    );
-
-    // 支持 HTTP CONNECT 和普通 HTTP 方法
     if method == "CONNECT" {
-        // CONNECT 方法：用于 HTTPS 隧道
         let (dest, domain) = parse_connect_target(target)?;
-
-        tracing::info!(
-            "🔍 CONNECT target parsed: dest={:?}, domain={:?}",
-            dest,
-            domain
-        );
-
-        // 发送 200 响应
-        let stream_ref = reader.get_mut();
-        stream_ref
-            .write_all(b"HTTP/1.1 200 Connection Established\r\n\r\n")
-            .await?;
-
-        tracing::info!("✅ Sent 200 Connection Established");
+        let buffered = reader.buffer().to_vec();
+        let mut stream = reader.into_inner();
         release_handshake_permit(handshake_permit);
 
-        // ✅ 检查 BufReader 是否有缓冲数据（模仿 sing-box）
-        let buffered = reader.buffer().len();
-        tracing::info!("🔍 BufReader has {} bytes buffered", buffered);
+        // 先拨号再回 200：旧逻辑「先 200 再拨号」在 outbound/RSQ 卡住时，
+        // 浏览器会认为隧道已通并狂发连接，最终 CLOSE_WAIT 堆积、新 CONNECT 无响应。
+        let remote = match dial_tcp_only(
+            &mut stream,
+            peer,
+            inbound_tag,
+            inbound_type,
+            dialer,
+            dns,
+            dest,
+            domain,
+        )
+        .await
+        {
+            Ok(Some(r)) => r,
+            Ok(None) => return Ok(()),
+            Err(err) => {
+                let _ = send_http_error(
+                    &mut stream,
+                    502,
+                    "Bad Gateway",
+                    "outbound dial failed",
+                )
+                .await;
+                return Err(err);
+            }
+        };
+        let mut remote = remote;
 
-        if buffered > 0 {
-            // 有缓冲数据，需要先发送
-            tracing::info!(
-                "🔍 Found {} bytes in buffer, will send before relay",
-                buffered
-            );
-            let buffered_data = reader.buffer().to_vec();
-
-            // 提取底层 stream
-            let mut stream = reader.into_inner();
-
-            // 连接远程并发送缓冲数据
-            dial_and_relay_with_initial_data(
-                &mut stream,
-                buffered_data,
-                peer,
-                inbound_tag,
-                inbound_type,
-                dialer,
-                dns,
-                dest,
-                domain,
-            )
+        if let Err(err) = stream
+            .write_all(b"HTTP/1.1 200 Connection Established\r\n\r\n")
             .await
-        } else {
-            // 没有缓冲数据，直接转发
-            tracing::info!("🔍 No buffered data, using direct relay");
-            let mut stream = reader.into_inner();
-            dial_and_relay(
-                &mut stream,
-                peer,
-                inbound_tag,
-                inbound_type,
-                dialer,
-                dns,
-                dest,
-                domain,
-            )
-            .await
+        {
+            let _ = remote.as_mut().shutdown().await;
+            return Err(err.into());
         }
+
+        if !buffered.is_empty() {
+            if let Err(err) = remote.as_mut().write_all(&buffered).await {
+                let _ = remote.as_mut().shutdown().await;
+                return Err(err.into());
+            }
+        }
+
+        relay_proxy(&mut stream, remote).await
     } else if method == "GET"
         || method == "POST"
         || method == "HEAD"
@@ -747,36 +814,96 @@ async fn dial_and_relay(
     dialer: Arc<Dialer>,
     dns: Arc<DnsRouter>,
     dest: SocketAddr,
-    mut domain: Option<String>,
+    domain: Option<String>,
 ) -> Result<()> {
-    let process = rsb_core::lookup_process_for_tcp_stream(client);
-    let dest = resolve_destination(&dns, dest, domain.as_deref()).await?;
-
-    tracing::debug!(
-        "dial_and_relay: connecting to {:?}, domain: {:?}",
+    let Some(remote) = dial_tcp_only(
+        client,
+        peer,
+        inbound_tag,
+        inbound_type,
+        dialer,
+        dns,
         dest,
-        domain
-    );
-
-    let metadata = Metadata {
-        network: Network::Tcp,
-        source: Some(peer),
-        destination: Some(dest),
         domain,
-        protocol: Some("https".to_string()),
-        process_name: process.name,
-        process_path: process.path,
-        inbound_tag: inbound_tag.to_string(),
-        inbound_type: inbound_type.to_string(),
-        user: None,
-    };
-
-    let Some(mut remote) =
-        dial_tcp_with_client_watch(client, dialer, metadata, dest).await?
+    )
+    .await?
     else {
         return Ok(());
     };
     relay_proxy(client, remote).await
+}
+
+/// 只拨号不转发。用于 CONNECT/SOCKS「先拨通再应答」。
+async fn dial_tcp_only(
+    client: &mut TcpStream,
+    peer: SocketAddr,
+    inbound_tag: &str,
+    inbound_type: &str,
+    dialer: Arc<Dialer>,
+    dns: Arc<DnsRouter>,
+    dest: SocketAddr,
+    domain: Option<String>,
+) -> Result<Option<ProxyConn>> {
+    if client_is_closed(client).await {
+        abort_if_client_gone(client);
+        return Ok(None);
+    }
+
+    // 系统代理 / mixed 来自 127.0.0.1：同步 GetExtendedTcpTable 会阻塞 Tokio worker，
+    // 高并发时整机表现为「端口在听、CONNECT 已 200、随后全站超时」。
+    let process = if peer.ip().is_loopback() {
+        rsb_core::ProcessInfo::default()
+    } else {
+        rsb_core::lookup_process_for_tcp_stream(client)
+    };
+
+    let (dest, metadata, is_direct) = {
+        let resolve = resolve_for_connect(
+            &dialer,
+            &dns,
+            peer,
+            inbound_tag,
+            inbound_type,
+            dest,
+            domain,
+            process.name,
+            process.path,
+        );
+        tokio::pin!(resolve);
+        let mut tick = tokio::time::interval(std::time::Duration::from_millis(50));
+        tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        let deadline = tokio::time::sleep(RESOLVE_TIMEOUT);
+        tokio::pin!(deadline);
+        loop {
+            tokio::select! {
+                result = &mut resolve => break result?,
+                _ = &mut deadline => {
+                    anyhow::bail!("CONNECT resolve timed out after {RESOLVE_TIMEOUT:?}");
+                }
+                _ = tick.tick() => {
+                    if client_is_closed(client).await {
+                        abort_if_client_gone(client);
+                        return Ok(None);
+                    }
+                }
+            }
+        }
+    };
+
+    tracing::debug!(
+        is_direct,
+        "dial_tcp_only: connecting to {:?}, domain: {:?}",
+        dest,
+        metadata.domain
+    );
+
+    match dial_tcp_with_client_watch(client, dialer, metadata, dest, is_direct).await {
+        Ok(None) => {
+            abort_if_client_gone(client);
+            Ok(None)
+        }
+        other => other,
+    }
 }
 
 /// 带初始数据的转发（用于 CONNECT 隧道中已读取的 TLS ClientHello）
@@ -791,60 +918,22 @@ async fn dial_and_relay_with_initial_data(
     dest: SocketAddr,
     domain: Option<String>,
 ) -> Result<()> {
-    use std::time::Duration;
-
-    tracing::debug!(
-        "dial_and_relay_with_initial_data: initial_data.len() = {}",
-        initial_data.len()
-    );
-
-    let dest = resolve_destination(&dns, dest, domain.as_deref()).await?;
-
-    let metadata = Metadata {
-        network: Network::Tcp,
-        source: Some(peer),
-        destination: Some(dest),
+    let Some(mut remote) = dial_tcp_only(
+        client,
+        peer,
+        inbound_tag,
+        inbound_type,
+        dialer,
+        dns,
+        dest,
         domain,
-        protocol: Some("https".to_string()),
-        process_name: None,
-        process_path: None,
-        inbound_tag: inbound_tag.to_string(),
-        inbound_type: inbound_type.to_string(),
-        user: None,
-    };
-
-    let Some(mut remote) =
-        dial_tcp_with_client_watch(client, dialer, metadata, dest).await?
+    )
+    .await?
     else {
         return Ok(());
     };
 
     remote.as_mut().write_all(&initial_data).await?;
-
-    let mut first_chunk = vec![0u8; 1024];
-    match tokio::time::timeout(
-        Duration::from_secs(2),
-        remote.as_mut().read(&mut first_chunk),
-    )
-    .await
-    {
-        Ok(Ok(n)) => {
-            if n > 0 {
-                client.write_all(&first_chunk[..n]).await?;
-            } else {
-                tracing::debug!("remote closed before relay");
-                let _ = remote.as_mut().shutdown().await;
-                return Ok(());
-            }
-        }
-        Ok(Err(e)) => return Err(e.into()),
-        Err(_) => {
-            tracing::debug!("timeout waiting for first remote response");
-            let _ = remote.as_mut().shutdown().await;
-            anyhow::bail!("timeout waiting for first remote response");
-        }
-    }
-
     relay_proxy(client, remote).await
 }
 
@@ -860,6 +949,65 @@ fn parse_connect_target(target: &str) -> Result<(SocketAddr, Option<String>)> {
         ));
     }
     anyhow::bail!("invalid connect target: {target}")
+}
+
+/// CONNECT：先路由，再按 outbound 选 DNS。
+/// - direct：系统 DNS（国内站避免 remote-dns 境外 GeoDNS 拿到不可用 IP）
+/// - 代理：DnsRouter（remote-dns + detour，避免污染）
+async fn resolve_for_connect(
+    dialer: &Dialer,
+    dns: &DnsRouter,
+    peer: SocketAddr,
+    inbound_tag: &str,
+    inbound_type: &str,
+    dest: SocketAddr,
+    domain: Option<String>,
+    process_name: Option<String>,
+    process_path: Option<String>,
+) -> Result<(SocketAddr, Metadata, bool)> {
+    let port = dest.port();
+    let route_dest = if dest.ip().is_unspecified() {
+        SocketAddr::from(([0, 0, 0, 0], port))
+    } else {
+        dest
+    };
+    let metadata_for_route = Metadata {
+        network: Network::Tcp,
+        source: Some(peer),
+        destination: Some(route_dest),
+        domain: domain.clone(),
+        protocol: Some("https".to_string()),
+        process_name,
+        process_path,
+        inbound_tag: inbound_tag.to_string(),
+        inbound_type: inbound_type.to_string(),
+        user: None,
+    };
+
+    let tag = dialer.route_tag(&metadata_for_route).await?;
+    let use_system_dns = dialer.is_direct_outbound(&tag);
+
+    // direct：不在此预解析成单一 IP。DirectOutbound 会对全部 A 记录逐个拨号
+    // （百度等多 CDN 站第一个 IP 偶发不可达时，旧逻辑会 15s 超时假死）。
+    let resolved = if domain.is_none() {
+        dest
+    } else if use_system_dns {
+        SocketAddr::from(([0, 0, 0, 0], port))
+    } else {
+        resolve_destination(dns, dest, domain.as_deref()).await?
+    };
+
+    tracing::debug!(
+        outbound = %tag,
+        system_dns = use_system_dns,
+        resolved = %resolved,
+        domain = ?domain,
+        "CONNECT resolve"
+    );
+
+    let mut metadata = metadata_for_route;
+    metadata.destination = Some(resolved);
+    Ok((resolved, metadata, use_system_dns))
 }
 
 pub async fn resolve_destination(
@@ -1183,6 +1331,10 @@ pub async fn relay_proxy(a: &mut TcpStream, mut b: ProxyConn) -> Result<()> {
     // Do NOT use copy_bidirectional: it waits for BOTH EOFs. Client FIN first
     // leaves the inbound TCP in CLOSE_WAIT until the outbound also EOFs (or
     // total timeout). Tear down as soon as either side ends or goes idle.
+    //
+    // 智能策略：有流量则保持（视频/直播可持续）；双向数秒无字节则拆掉，
+    // 需要时由浏览器再建新连接。write 也必须带超时，否则远端半死会卡死
+    // select → 读不到客户端 FIN → CLOSE_WAIT 堆积。
     let copy = tokio::time::timeout(RELAY_TOTAL_TIMEOUT, async {
         let mut a_buf = vec![0u8; RELAY_BUF_SIZE];
         let mut b_buf = vec![0u8; RELAY_BUF_SIZE];
@@ -1191,7 +1343,7 @@ pub async fn relay_proxy(a: &mut TcpStream, mut b: ProxyConn) -> Result<()> {
                 r = read_with_idle(a, &mut a_buf) => {
                     match r {
                         Ok(0) => break,
-                        Ok(n) => b.write_all(&a_buf[..n]).await?,
+                        Ok(n) => write_with_idle(b.as_mut(), &a_buf[..n]).await?,
                         Err(err) => {
                             tracing::trace!(error = %err, "client->remote read end");
                             break;
@@ -1201,7 +1353,7 @@ pub async fn relay_proxy(a: &mut TcpStream, mut b: ProxyConn) -> Result<()> {
                 r = read_with_idle(b.as_mut(), &mut b_buf) => {
                     match r {
                         Ok(0) => break,
-                        Ok(n) => a.write_all(&b_buf[..n]).await?,
+                        Ok(n) => write_with_idle(a, &b_buf[..n]).await?,
                         Err(err) => {
                             tracing::trace!(error = %err, "remote->client read end");
                             break;
@@ -1247,7 +1399,7 @@ where
             r = read_with_idle(a, &mut a_buf) => {
                 match r {
                     Ok(0) => break,
-                    Ok(n) => b.write_all(&a_buf[..n]).await?,
+                    Ok(n) => write_with_idle(b, &a_buf[..n]).await?,
                     Err(err) => {
                         tracing::trace!(error = %err, "a->b read end");
                         break;
@@ -1257,7 +1409,7 @@ where
             r = read_with_idle(b, &mut b_buf) => {
                 match r {
                     Ok(0) => break,
-                    Ok(n) => a.write_all(&b_buf[..n]).await?,
+                    Ok(n) => write_with_idle(a, &b_buf[..n]).await?,
                     Err(err) => {
                         tracing::trace!(error = %err, "b->a read end");
                         break;
@@ -1280,6 +1432,20 @@ where
         Err(_) => Err(std::io::Error::new(
             std::io::ErrorKind::TimedOut,
             "relay idle timeout",
+        )),
+    }
+}
+
+async fn write_with_idle<W>(writer: &mut W, buf: &[u8]) -> std::io::Result<()>
+where
+    W: tokio::io::AsyncWrite + Unpin + ?Sized,
+{
+    match tokio::time::timeout(RELAY_WRITE_IDLE_TIMEOUT, AsyncWriteExt::write_all(writer, buf)).await
+    {
+        Ok(r) => r,
+        Err(_) => Err(std::io::Error::new(
+            std::io::ErrorKind::TimedOut,
+            "relay write idle timeout",
         )),
     }
 }
@@ -1375,9 +1541,20 @@ async fn send_http_error(
         "HTTP/1.1 {code} {reason}\r\nContent-Length: {}\r\nConnection: close\r\n\r\n{body}",
         body.len()
     );
-    let _ = stream.write_all(response.as_bytes()).await;
-    let _ = stream.flush().await;
+    let _ = tokio::time::timeout(
+        std::time::Duration::from_millis(500),
+        stream.write_all(response.as_bytes()),
+    )
+    .await;
+    let _ = tokio::time::timeout(std::time::Duration::from_millis(200), stream.flush()).await;
+    // 错误响应后立刻 RST，避免半关闭卡在 CLOSE_WAIT。
+    abort_inbound_socket(stream);
     Ok(())
+}
+
+/// 客户端已 FIN：立刻 linger-0，禁止继续等 outbound。
+fn abort_if_client_gone(client: &TcpStream) {
+    abort_inbound_socket(client);
 }
 
 async fn shutdown_io(
@@ -1407,23 +1584,62 @@ async fn client_is_closed(stream: &mut TcpStream) -> bool {
 }
 
 /// Dial outbound while watching the inbound client; abort if the client disconnects first.
+///
+/// `is_direct`：直连不走全局限流。智能分流下大量境外 CONNECT 卡在 RSQ 时，
+/// 若直连也排队，会出现「端口在听、百度 CONNECT 也超时」的假死。
 async fn dial_tcp_with_client_watch(
     client: &mut TcpStream,
     dialer: Arc<Dialer>,
     metadata: Metadata,
     dest: SocketAddr,
+    is_direct: bool,
 ) -> Result<Option<ProxyConn>> {
-    use std::time::Duration;
+    use std::sync::OnceLock;
 
-    // RSQ/RST remote-resolve + QUIC/TCP handshake can exceed 8s on cold paths
-    // (e.g. www.google.com via congested relay). Align with stream_open_timeout.
-    let dial = tokio::time::timeout(
-        Duration::from_secs(15),
-        dialer.dial_tcp(&metadata, dest),
-    );
+    let _dial_permit = if is_direct {
+        None
+    } else {
+        static DIAL_LIMITER: OnceLock<Arc<tokio::sync::Semaphore>> = OnceLock::new();
+        let limiter = DIAL_LIMITER
+            .get_or_init(|| Arc::new(tokio::sync::Semaphore::new(MAX_CONCURRENT_DIALS)));
+        // 排队期间也要看客户端是否已断开，否则 CLOSE_WAIT 堆积。
+        let acquire = limiter.acquire();
+        tokio::pin!(acquire);
+        let mut tick = tokio::time::interval(std::time::Duration::from_millis(50));
+        tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
+        let deadline = tokio::time::sleep(PROXY_DIAL_ACQUIRE_TIMEOUT);
+        tokio::pin!(deadline);
+        loop {
+            tokio::select! {
+                permit = &mut acquire => {
+                    break Some(
+                        permit.map_err(|_| anyhow::anyhow!("outbound dial semaphore closed"))?,
+                    );
+                }
+                _ = &mut deadline => {
+                    anyhow::bail!("outbound dial concurrency saturated");
+                }
+                _ = tick.tick() => {
+                    if client_is_closed(client).await {
+                        tracing::debug!("inbound client closed while waiting dial permit");
+                        abort_if_client_gone(client);
+                        return Ok(None);
+                    }
+                }
+            }
+        }
+    };
+
+    let dial_timeout = if is_direct {
+        // 直连本身有 per-IP 800ms；总预算略宽即可
+        std::time::Duration::from_secs(3)
+    } else {
+        OUTBOUND_DIAL_TIMEOUT
+    };
+    let dial = tokio::time::timeout(dial_timeout, dialer.dial_tcp(&metadata, dest));
     tokio::pin!(dial);
 
-    let mut tick = tokio::time::interval(Duration::from_millis(50));
+    let mut tick = tokio::time::interval(std::time::Duration::from_millis(50));
     tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
     loop {
@@ -1432,12 +1648,13 @@ async fn dial_tcp_with_client_watch(
                 return match result {
                     Ok(Ok(conn)) => Ok(Some(conn)),
                     Ok(Err(e)) => Err(e),
-                    Err(_) => anyhow::bail!("outbound dial timeout after 15s"),
+                    Err(_) => anyhow::bail!("outbound dial timeout after {dial_timeout:?}"),
                 };
             }
             _ = tick.tick() => {
                 if client_is_closed(client).await {
                     tracing::debug!("inbound client closed during outbound dial");
+                    abort_if_client_gone(client);
                     return Ok(None);
                 }
             }

@@ -35,27 +35,70 @@ impl Outbound for DirectOutbound {
         destination: SocketAddr,
         domain: Option<&str>,
     ) -> Result<ProxyConn, BoxError> {
-        let destination = if destination.ip().is_unspecified() {
+        let candidates: Vec<SocketAddr> = if destination.ip().is_unspecified() {
             let host = domain.ok_or_else(|| {
                 anyhow::anyhow!("direct outbound needs a domain when destination IP is unspecified")
             })?;
-            let addrs: Vec<SocketAddr> = tokio::net::lookup_host((host, destination.port()))
-                .await
-                .map_err(|e| anyhow::anyhow!("direct dns lookup for `{host}` failed: {e}"))?
-                .collect();
-            addrs
-                .iter()
-                .copied()
-                .find(|a| a.is_ipv4())
-                .or_else(|| addrs.into_iter().next())
-                .ok_or_else(|| {
-                    anyhow::anyhow!("direct dns lookup for `{host}` returned no addresses")
-                })?
+            // 必须限时：Windows 上 lookup_host 在高压/异常 DNS 下可能长时间不返回，
+            // 会拖死 inbound 任务 → 端口仍 LISTEN 但经代理全站超时（假连接）。
+            const DNS_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(2);
+            let addrs: Vec<SocketAddr> = match tokio::time::timeout(
+                DNS_TIMEOUT,
+                tokio::net::lookup_host((host, destination.port())),
+            )
+            .await
+            {
+                Ok(Ok(iter)) => iter.collect(),
+                Ok(Err(e)) => {
+                    return Err(anyhow::anyhow!("direct dns lookup for `{host}` failed: {e}").into());
+                }
+                Err(_) => {
+                    return Err(anyhow::anyhow!(
+                        "direct dns lookup for `{host}` timed out after {DNS_TIMEOUT:?}"
+                    )
+                    .into());
+                }
+            };
+            let mut v4: Vec<_> = addrs.iter().copied().filter(|a| a.is_ipv4()).collect();
+            if v4.is_empty() {
+                v4 = addrs;
+            }
+            if v4.is_empty() {
+                return Err(anyhow::anyhow!(
+                    "direct dns lookup for `{host}` returned no addresses"
+                )
+                .into());
+            }
+            v4
         } else {
-            destination
+            vec![destination]
         };
-        let stream = rsb_core::tcp_connect_via(destination, self.bind_interface.as_deref()).await?;
-        Ok(tcp_stream(stream))
+
+        let mut last_err: Option<anyhow::Error> = None;
+        // 每个候选 IP 限时拨号。不宜 ≥ 客户端假死探针超时（约 2.5~4s），
+        // 否则百度等 CDN 首个黑洞 IP 会把整次请求拖死，被误判成「代理假死」。
+        const PER_CANDIDATE: std::time::Duration = std::time::Duration::from_millis(800);
+        for addr in candidates {
+            match tokio::time::timeout(
+                PER_CANDIDATE,
+                rsb_core::tcp_connect_via(addr, self.bind_interface.as_deref()),
+            )
+            .await
+            {
+                Ok(Ok(stream)) => return Ok(tcp_stream(stream)),
+                Ok(Err(err)) => {
+                    tracing::debug!(%addr, error = %err, "direct dial candidate failed");
+                    last_err = Some(err);
+                }
+                Err(_) => {
+                    tracing::debug!(%addr, "direct dial candidate timed out");
+                    last_err = Some(anyhow::anyhow!("direct dial {addr} timed out"));
+                }
+            }
+        }
+        Err(last_err
+            .unwrap_or_else(|| anyhow::anyhow!("direct dial failed"))
+            .into())
     }
     async fn dial_udp(&self, _destination: SocketAddr) -> Result<ProxyUdpSocket, BoxError> {
         let socket = rsb_core::udp_bind_via(self.bind_interface.as_deref()).await?;

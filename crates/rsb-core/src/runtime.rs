@@ -89,6 +89,18 @@ impl Dialer {
         result
     }
 
+    /// 仅做路由选择（不拨号），供 CONNECT 在 DNS 前判断是否 direct。
+    pub async fn route_tag(&self, metadata: &Metadata) -> Result<String> {
+        self.router.route(metadata).await
+    }
+
+    pub fn is_direct_outbound(&self, tag: &str) -> bool {
+        self.manager
+            .get(tag)
+            .map(|o| o.kind() == rsb_constant::TYPE_DIRECT)
+            .unwrap_or(false)
+    }
+
     pub async fn dial_udp(
         &self,
         metadata: &Metadata,

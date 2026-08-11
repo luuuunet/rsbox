@@ -20,11 +20,11 @@ fn next_udp_session_id() -> u32 {
 
 const DEFAULT_IDLE_TIMEOUT: Duration = Duration::from_secs(30);
 const DEFAULT_KEEP_ALIVE: Duration = Duration::from_secs(10);
-const DEFAULT_PROBE_INTERVAL: Duration = Duration::from_secs(20);
-const PROBE_STREAM_TIMEOUT: Duration = Duration::from_secs(4);
-const DEFAULT_STREAM_OPEN_TIMEOUT: Duration = Duration::from_secs(15);
+const DEFAULT_PROBE_INTERVAL: Duration = Duration::from_secs(15);
+const PROBE_STREAM_TIMEOUT: Duration = Duration::from_secs(3);
+const DEFAULT_STREAM_OPEN_TIMEOUT: Duration = Duration::from_secs(8);
 const DEFAULT_MAX_SESSION_AGE: Duration = Duration::from_secs(30 * 60);
-const TCP_OPEN_REPLY_TIMEOUT: Duration = Duration::from_secs(10);
+const TCP_OPEN_REPLY_TIMEOUT: Duration = Duration::from_secs(4);
 
 struct RsqSession {
     endpoint: Endpoint,
@@ -248,6 +248,7 @@ impl RsqOutbound {
         let max_session_age = self.inner.max_session_age;
 
         tokio::spawn(async move {
+            let mut consecutive_probe_fails = 0u32;
             loop {
                 tokio::time::sleep(probe_interval).await;
 
@@ -268,17 +269,33 @@ impl RsqOutbound {
                 };
 
                 let Some((conn, generation, conn_id)) = probe_target else {
+                    consecutive_probe_fails = 0;
                     continue;
                 };
 
-                // 对齐 Hy2：probe 只观察不干预；open_bi 高负载下易误超时。
-                if !probe_connection(&conn).await {
-                    tracing::debug!(
+                if probe_connection(&conn).await {
+                    consecutive_probe_fails = 0;
+                    continue;
+                }
+
+                consecutive_probe_fails = consecutive_probe_fails.saturating_add(1);
+                tracing::warn!(
+                    tag = %tag,
+                    conn_id,
+                    generation,
+                    consecutive_probe_fails,
+                    "rsq: probe open_bi failed"
+                );
+                // 连续失败视为僵尸会话：主动重置，避免后续 dial 全卡在坏 session 上。
+                if consecutive_probe_fails >= 2 {
+                    tracing::warn!(
                         tag = %tag,
                         conn_id,
                         generation,
-                        "rsq: probe open_bi failed (session kept)"
+                        "rsq: resetting zombie session after probe failures"
                     );
+                    reset_session(&shared, "probe failed").await;
+                    consecutive_probe_fails = 0;
                 }
             }
         });
@@ -535,12 +552,8 @@ impl Outbound for RsqOutbound {
                     self.reset_session("dial retry").await;
                     return self.dial_tcp_inner(destination, domain).await;
                 }
-                tracing::debug!(
-                    tag = %self.inner.tag,
-                    error = %first,
-                    "rsq: stream dial retry on same session"
-                );
-                self.dial_tcp_inner(destination, domain).await
+                // 旧逻辑无条件二次 retry，会在僵尸会话上把失败放大 2×，拖死 dial 限流。
+                Err(first)
             }
         }
     }
@@ -611,6 +624,9 @@ fn should_reset_rsq_session(err: &BoxError) -> bool {
         || msg.contains("connection closed")
         || msg.contains("application closed")
         || msg.contains("timed out waiting for connection")
+        || msg.contains("open stream timeout")
+        || msg.contains("read tcp reply timeout")
+        || msg.contains("stream closed before tcp reply")
 }
 
 fn format_address(addr: SocketAddr) -> String {
