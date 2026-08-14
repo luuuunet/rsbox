@@ -16,22 +16,21 @@ const MAX_CONCURRENT_INBOUND: usize = 256;
 const MAX_ACTIVE_CONNECTIONS: usize = 512;
 /// outbound dial 全局限流（仅代理链路）。直连绝不能进此队列，
 /// 否则节点卡死时百度等国内站 CONNECT 也会被拖成「假死」。
-const MAX_CONCURRENT_DIALS: usize = 48;
-const INBOUND_ACQUIRE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(3);
+const MAX_CONCURRENT_DIALS: usize = 32;
+const INBOUND_ACQUIRE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(2);
 /// 读完代理请求头的上限；超时必须释许可，否则 CLOSE_WAIT/假死。
-const HANDSHAKE_IO_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
-const INBOUND_DRAIN_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(200);
+const HANDSHAKE_IO_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(3);
+const INBOUND_DRAIN_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(50);
 /// Absolute ceiling for one relay; idle/EOF should finish much sooner.
 const RELAY_TOTAL_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(600);
-/// 对齐 Clash/clash-rs 常见策略：双向约 60s 无字节则拆隧道。
-/// 视频/直播持续有流量会不断刷新；闲置连接不长期占用（减轻 CLOSE_WAIT）。
-const RELAY_IDLE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(60);
-/// 写方向半死远端更快失败，避免卡在 write 上堆 CLOSE_WAIT。
-const RELAY_WRITE_IDLE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
-const OUTBOUND_DIAL_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
-const PROXY_DIAL_ACQUIRE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(2);
+/// 双向空闲拆隧道。过长会让已 FIN 的入站卡在 CLOSE_WAIT。
+const RELAY_IDLE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15);
+/// 写半死远端必须更快失败，否则卡在 write 时读不到客户端 FIN → CLOSE_WAIT。
+const RELAY_WRITE_IDLE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+const OUTBOUND_DIAL_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(4);
+const PROXY_DIAL_ACQUIRE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(1);
 /// DNS via RST may need a stream open; keep above dial work budget but short.
-const RESOLVE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(8);
+const RESOLVE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
 const RELAY_BUF_SIZE: usize = 16 * 1024;
 
 /// 连接生命周期计数：accept→close 全程持有，Drop 时自动 -1。
@@ -496,6 +495,7 @@ impl Inbound for MixedInbound {
                                 }
                             }
 
+                            abort_inbound_socket(&stream);
                             close_inbound_stream(&mut stream).await;
                         });
                     }
@@ -903,7 +903,11 @@ async fn dial_tcp_only(
             abort_if_client_gone(client);
             Ok(None)
         }
-        other => other,
+        Ok(Some(conn)) => Ok(Some(conn)),
+        Err(err) => {
+            abort_if_client_gone(client);
+            Err(err)
+        }
     }
 }
 
@@ -1037,14 +1041,23 @@ pub async fn resolve_destination(
 
 pub async fn relay_bidirectional(
     a: &mut TcpStream,
-    mut b: impl tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
+    b: impl tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
 ) -> Result<()> {
-    let copy = tokio::time::timeout(
-        RELAY_TOTAL_TIMEOUT,
-        relay_until_either_eof_sized(a, &mut b),
-    )
+    let copy = tokio::time::timeout(RELAY_TOTAL_TIMEOUT, async {
+        let (mut a_r, mut a_w) = a.split();
+        let (mut b_r, mut b_w) = tokio::io::split(b);
+        let mut a_buf = vec![0u8; RELAY_BUF_SIZE];
+        let mut b_buf = vec![0u8; RELAY_BUF_SIZE];
+        let r = tokio::select! {
+            r = pump_until_eof(&mut a_r, &mut b_w, &mut a_buf) => r,
+            r = pump_until_eof(&mut b_r, &mut a_w, &mut b_buf) => r,
+        };
+        let _ = a_w.shutdown().await;
+        let _ = b_w.shutdown().await;
+        r
+    })
     .await;
-    let _ = tokio::io::AsyncWriteExt::shutdown(&mut b).await;
+    abort_inbound_socket(a);
     close_inbound_stream(a).await;
     match copy {
         Ok(Ok(())) => Ok(()),
@@ -1060,10 +1073,19 @@ pub async fn relay_streams(
     a: &mut (impl tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin),
     b: &mut (impl tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin),
 ) -> Result<()> {
-    let copy = tokio::time::timeout(
-        RELAY_TOTAL_TIMEOUT,
-        relay_until_either_eof_sized(a, b),
-    )
+    let copy = tokio::time::timeout(RELAY_TOTAL_TIMEOUT, async {
+        let (mut a_r, mut a_w) = tokio::io::split(&mut *a);
+        let (mut b_r, mut b_w) = tokio::io::split(&mut *b);
+        let mut a_buf = vec![0u8; RELAY_BUF_SIZE];
+        let mut b_buf = vec![0u8; RELAY_BUF_SIZE];
+        let r = tokio::select! {
+            r = pump_until_eof(&mut a_r, &mut b_w, &mut a_buf) => r,
+            r = pump_until_eof(&mut b_r, &mut a_w, &mut b_buf) => r,
+        };
+        let _ = a_w.shutdown().await;
+        let _ = b_w.shutdown().await;
+        r
+    })
     .await;
     shutdown_io(a, b).await;
     match copy {
@@ -1189,9 +1211,10 @@ pub async fn relay_streams_user(
     let down = relay_user_half(&mut remote_r, &mut client_w, &s_down, false);
     tokio::pin!(up);
     tokio::pin!(down);
+    // 任一侧结束即拆隧道，勿再 await 另一侧（否则 CLOSE_WAIT / 半开连接堆积）。
     tokio::select! {
-        r = &mut up => { r?; down.await?; }
-        r = &mut down => { r?; up.await?; }
+        r = &mut up => r?,
+        r = &mut down => r?,
     }
     Ok(())
 }
@@ -1331,50 +1354,29 @@ where
     Ok(())
 }
 
-pub async fn relay_proxy(a: &mut TcpStream, mut b: ProxyConn) -> Result<()> {
-    // Do NOT use copy_bidirectional: it waits for BOTH EOFs. Client FIN first
-    // leaves the inbound TCP in CLOSE_WAIT until the outbound also EOFs (or
-    // total timeout). Tear down as soon as either side ends or goes idle.
-    //
-    // 智能策略：有流量则保持（视频/直播可持续）；双向数秒无字节则拆掉，
-    // 需要时由浏览器再建新连接。write 也必须带超时，否则远端半死会卡死
-    // select → 读不到客户端 FIN → CLOSE_WAIT 堆积。
+pub async fn relay_proxy(a: &mut TcpStream, b: ProxyConn) -> Result<()> {
+    // 关键：单层 select「读完再 write」时，write 阻塞期间另一个方向的 FIN 读不到，
+    // Windows 上入站会长时间卡在 CLOSE_WAIT。split 后两路并行，任一侧结束取消另一侧。
     let copy = tokio::time::timeout(RELAY_TOTAL_TIMEOUT, async {
+        let (mut a_r, mut a_w) = a.split();
+        let (mut b_r, mut b_w) = tokio::io::split(b);
         let mut a_buf = vec![0u8; RELAY_BUF_SIZE];
         let mut b_buf = vec![0u8; RELAY_BUF_SIZE];
-        loop {
-            tokio::select! {
-                r = read_with_idle(a, &mut a_buf) => {
-                    match r {
-                        Ok(0) => break,
-                        Ok(n) => write_with_idle(b.as_mut(), &a_buf[..n]).await?,
-                        Err(err) => {
-                            tracing::trace!(error = %err, "client->remote read end");
-                            break;
-                        }
-                    }
-                }
-                r = read_with_idle(b.as_mut(), &mut b_buf) => {
-                    match r {
-                        Ok(0) => break,
-                        Ok(n) => write_with_idle(a, &b_buf[..n]).await?,
-                        Err(err) => {
-                            tracing::trace!(error = %err, "remote->client read end");
-                            break;
-                        }
-                    }
-                }
-            }
-        }
-        let _ = a.shutdown().await;
-        let _ = b.as_mut().shutdown().await;
-        Ok::<(), anyhow::Error>(())
+        let r = tokio::select! {
+            r = pump_until_eof(&mut a_r, &mut b_w, &mut a_buf) => r,
+            r = pump_until_eof(&mut b_r, &mut a_w, &mut b_buf) => r,
+        };
+        let _ = a_w.shutdown().await;
+        let _ = b_w.shutdown().await;
+        drop(a_r);
+        drop(a_w);
+        drop(b_r);
+        drop(b_w);
+        r
     })
     .await;
 
-    // Always release both ends immediately — this is what clears CLOSE_WAIT.
-    let _ = b.as_mut().shutdown().await;
-    drop(b);
+    abort_inbound_socket(a);
     close_inbound_stream(a).await;
 
     match copy {
@@ -1390,40 +1392,27 @@ pub async fn relay_proxy(a: &mut TcpStream, mut b: ProxyConn) -> Result<()> {
     }
 }
 
-/// Sized variant for callers that own concrete stream types.
-async fn relay_until_either_eof_sized<A, B>(a: &mut A, b: &mut B) -> Result<()>
+/// 单向泵：读到 EOF/错误即返回；与另一方向并行时，对端结束会取消本泵。
+async fn pump_until_eof<R, W>(
+    reader: &mut R,
+    writer: &mut W,
+    buf: &mut [u8],
+) -> Result<()>
 where
-    A: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
-    B: tokio::io::AsyncRead + tokio::io::AsyncWrite + Unpin,
+    R: tokio::io::AsyncRead + Unpin + ?Sized,
+    W: tokio::io::AsyncWrite + Unpin + ?Sized,
 {
-    let mut a_buf = vec![0u8; RELAY_BUF_SIZE];
-    let mut b_buf = vec![0u8; RELAY_BUF_SIZE];
     loop {
-        tokio::select! {
-            r = read_with_idle(a, &mut a_buf) => {
-                match r {
-                    Ok(0) => break,
-                    Ok(n) => write_with_idle(b, &a_buf[..n]).await?,
-                    Err(err) => {
-                        tracing::trace!(error = %err, "a->b read end");
-                        break;
-                    }
-                }
-            }
-            r = read_with_idle(b, &mut b_buf) => {
-                match r {
-                    Ok(0) => break,
-                    Ok(n) => write_with_idle(a, &b_buf[..n]).await?,
-                    Err(err) => {
-                        tracing::trace!(error = %err, "b->a read end");
-                        break;
-                    }
-                }
+        match read_with_idle(reader, buf).await {
+            Ok(0) => break,
+            Ok(n) => write_with_idle(writer, &buf[..n]).await?,
+            Err(err) => {
+                tracing::trace!(error = %err, "relay pump read end");
+                break;
             }
         }
     }
-    let _ = a.shutdown().await;
-    let _ = b.shutdown().await;
+    let _ = writer.shutdown().await;
     Ok(())
 }
 
@@ -1458,10 +1447,10 @@ where
 fn tune_accepted_stream(stream: &TcpStream) {
     let _ = stream.set_nodelay(true);
     let sock = socket2::SockRef::from(stream);
-    let mut ka = socket2::TcpKeepalive::new().with_time(std::time::Duration::from_secs(30));
+    let mut ka = socket2::TcpKeepalive::new().with_time(std::time::Duration::from_secs(15));
     #[cfg(any(target_os = "linux", target_os = "macos", target_os = "windows"))]
     {
-        ka = ka.with_interval(std::time::Duration::from_secs(10));
+        ka = ka.with_interval(std::time::Duration::from_secs(5));
     }
     #[cfg(target_os = "linux")]
     {
@@ -1470,29 +1459,30 @@ fn tune_accepted_stream(stream: &TcpStream) {
     if let Err(err) = sock.set_tcp_keepalive(&ka) {
         tracing::trace!(error = %err, "set_tcp_keepalive on accepted stream failed");
     }
+    // Windows：accept 起就 SO_LINGER=0，任务一 drop 即 RST，避免 CLOSE_WAIT 滞留。
+    abort_inbound_socket(stream);
 }
 
 /// Fully close an inbound client socket (avoids CLOSE_WAIT accumulation on Windows).
 async fn close_inbound_stream(stream: &mut TcpStream) {
-    // Peer may already have FINed (CLOSE_WAIT). Drain any leftover, then FIN our
-    // write half; if drain stalls, RST so the fd does not linger in CLOSE_WAIT.
+    abort_inbound_socket(stream);
     let drain = async {
         let mut discard = [0u8; 4096];
         loop {
-            match stream.read(&mut discard).await {
-                Ok(0) | Err(_) => break,
-                Ok(_) => continue,
+            match tokio::time::timeout(
+                std::time::Duration::from_millis(20),
+                stream.read(&mut discard),
+            )
+            .await
+            {
+                Ok(Ok(0)) | Ok(Err(_)) | Err(_) => break,
+                Ok(Ok(_)) => continue,
             }
         }
     };
-    let drained = tokio::time::timeout(INBOUND_DRAIN_TIMEOUT, drain).await;
+    let _ = tokio::time::timeout(INBOUND_DRAIN_TIMEOUT, drain).await;
     let _ = stream.shutdown().await;
-    // Always arm linger-0 before drop so Windows clears CLOSE_WAIT on drop even
-    // if the peer is half-closed and a graceful FIN handshake would stall.
     abort_inbound_socket(stream);
-    if drained.is_err() {
-        tracing::trace!("inbound drain timed out; socket armed for RST on drop");
-    }
 }
 
 /// RST the socket when graceful drain times out (prevents CLOSE_WAIT pile-up).

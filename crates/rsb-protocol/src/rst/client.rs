@@ -26,14 +26,13 @@ const DEFAULT_STREAM_OPEN_TIMEOUT: Duration = Duration::from_secs(15);
 const DEFAULT_MAX_SESSION_AGE: Duration = Duration::from_secs(30 * 60);
 /// Cap concurrent dial_tcp on one RST session so browser parallel CONNECTs
 /// queue instead of stampeding the node egress (which yields mass 502).
-const DEFAULT_DIAL_CONCURRENCY: usize = 16;
-/// Fail fast when the dial queue is full — but wait long enough for
-/// image-heavy pages (CrazyGames etc.) to drain instead of fail→retry lag.
-const DIAL_ACQUIRE_TIMEOUT: Duration = Duration::from_secs(12);
+const DEFAULT_DIAL_CONCURRENCY: usize = 12;
+/// Fail fast when the dial queue is full — long waits leave inbound CLOSE_WAIT.
+const DIAL_ACQUIRE_TIMEOUT: Duration = Duration::from_secs(2);
 /// Hard ceiling for one dial after acquiring a permit (open stream + TCP req).
-const DIAL_WORK_TIMEOUT: Duration = Duration::from_secs(8);
+const DIAL_WORK_TIMEOUT: Duration = Duration::from_secs(5);
 /// Auth must not hang: otherwise connect_inflight sticks and all dials wedge.
-const AUTH_TIMEOUT: Duration = Duration::from_secs(8);
+const AUTH_TIMEOUT: Duration = Duration::from_secs(6);
 /// Rebuild wedged session after this many consecutive timeout-like dial fails.
 const WEDGE_REBUILD_AFTER: u32 = 2;
 

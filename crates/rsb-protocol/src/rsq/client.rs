@@ -10,6 +10,7 @@ use std::sync::atomic::{AtomicBool, AtomicU32, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWriteExt};
+use tokio::sync::Semaphore;
 
 static SESSION_COUNTER: AtomicU64 = AtomicU64::new(1);
 
@@ -20,11 +21,14 @@ fn next_udp_session_id() -> u32 {
 
 const DEFAULT_IDLE_TIMEOUT: Duration = Duration::from_secs(30);
 const DEFAULT_KEEP_ALIVE: Duration = Duration::from_secs(10);
-const DEFAULT_PROBE_INTERVAL: Duration = Duration::from_secs(15);
-const PROBE_STREAM_TIMEOUT: Duration = Duration::from_secs(3);
-const DEFAULT_STREAM_OPEN_TIMEOUT: Duration = Duration::from_secs(8);
+/// 僵尸会话要尽快发现；过长会导致 mixed CONNECT 全超时 + CLOSE_WAIT。
+const DEFAULT_PROBE_INTERVAL: Duration = Duration::from_secs(5);
+const PROBE_STREAM_TIMEOUT: Duration = Duration::from_secs(2);
+const DEFAULT_STREAM_OPEN_TIMEOUT: Duration = Duration::from_secs(4);
 const DEFAULT_MAX_SESSION_AGE: Duration = Duration::from_secs(30 * 60);
-const TCP_OPEN_REPLY_TIMEOUT: Duration = Duration::from_secs(4);
+const TCP_OPEN_REPLY_TIMEOUT: Duration = Duration::from_secs(3);
+const DEFAULT_DIAL_CONCURRENCY: usize = 16;
+const DIAL_ACQUIRE_TIMEOUT: Duration = Duration::from_secs(2);
 
 struct RsqSession {
     endpoint: Endpoint,
@@ -41,6 +45,8 @@ struct RsqShared {
     connect_notify: tokio::sync::Notify,
     generation: AtomicU32,
     probe_task_started: AtomicBool,
+    dial_sem: Semaphore,
+    consecutive_timeouts: AtomicU32,
 }
 
 struct RsqOutboundInner {
@@ -148,6 +154,8 @@ impl RsqOutbound {
                 connect_notify: tokio::sync::Notify::new(),
                 generation: AtomicU32::new(0),
                 probe_task_started: AtomicBool::new(false),
+                dial_sem: Semaphore::new(DEFAULT_DIAL_CONCURRENCY),
+                consecutive_timeouts: AtomicU32::new(0),
             }),
         });
         if warm_up {
@@ -286,13 +294,13 @@ impl RsqOutbound {
                     consecutive_probe_fails,
                     "rsq: probe open_bi failed"
                 );
-                // 连续失败视为僵尸会话：主动重置，避免后续 dial 全卡在坏 session 上。
-                if consecutive_probe_fails >= 2 {
+                // 一次确认失败即可重置：等两次太慢，mixed 早已假死。
+                if consecutive_probe_fails >= 1 {
                     tracing::warn!(
                         tag = %tag,
                         conn_id,
                         generation,
-                        "rsq: resetting zombie session after probe failures"
+                        "rsq: resetting zombie session after probe failure"
                     );
                     reset_session(&shared, "probe failed").await;
                     consecutive_probe_fails = 0;
@@ -446,6 +454,18 @@ impl RsqOutbound {
         destination: SocketAddr,
         domain: Option<&str>,
     ) -> Result<ProxyConn, BoxError> {
+        let _permit = if destination.port() == 53 {
+            None
+        } else {
+            match tokio::time::timeout(DIAL_ACQUIRE_TIMEOUT, self.inner.shared.dial_sem.acquire())
+                .await
+            {
+                Ok(Ok(p)) => Some(p),
+                Ok(Err(_)) => return Err(anyhow::anyhow!("rsq: dial semaphore closed").into()),
+                Err(_) => return Err(anyhow::anyhow!("rsq: dial queue timeout").into()),
+            }
+        };
+
         let session = self.get_connection().await?;
         let (mut send, mut recv) = self
             .open_bi_with_timeout(&session.connection)
@@ -541,18 +561,30 @@ impl Outbound for RsqOutbound {
         domain: Option<&str>,
     ) -> Result<ProxyConn, BoxError> {
         match self.dial_tcp_inner(destination, domain).await {
-            Ok(conn) => Ok(conn),
+            Ok(conn) => {
+                self.inner
+                    .shared
+                    .consecutive_timeouts
+                    .store(0, Ordering::Relaxed);
+                Ok(conn)
+            }
             Err(first) => {
                 if should_reset_rsq_session(&first) {
+                    let n = self
+                        .inner
+                        .shared
+                        .consecutive_timeouts
+                        .fetch_add(1, Ordering::Relaxed)
+                        + 1;
                     tracing::warn!(
                         tag = %self.inner.tag,
                         error = %first,
+                        consecutive_timeouts = n,
                         "rsq: session error, reconnecting once"
                     );
                     self.reset_session("dial retry").await;
                     return self.dial_tcp_inner(destination, domain).await;
                 }
-                // 旧逻辑无条件二次 retry，会在僵尸会话上把失败放大 2×，拖死 dial 限流。
                 Err(first)
             }
         }
@@ -605,6 +637,7 @@ async fn probe_connection(conn: &quinn::Connection) -> bool {
 }
 
 async fn reset_session(shared: &RsqShared, reason: &str) {
+    shared.consecutive_timeouts.store(0, Ordering::Relaxed);
     let mut guard = shared.session.lock().await;
     if let Some(session) = guard.take() {
         shared.generation.fetch_add(1, Ordering::Relaxed);
@@ -627,6 +660,7 @@ fn should_reset_rsq_session(err: &BoxError) -> bool {
         || msg.contains("open stream timeout")
         || msg.contains("read tcp reply timeout")
         || msg.contains("stream closed before tcp reply")
+        || msg.contains("dial queue timeout")
 }
 
 fn format_address(addr: SocketAddr) -> String {
