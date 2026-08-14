@@ -11,10 +11,19 @@ use rsb_core::SharedOutboundManager;
 use std::collections::HashMap;
 use std::net::{IpAddr, Ipv4Addr, Ipv6Addr, SocketAddr};
 use std::sync::{Arc, Mutex, OnceLock};
+use std::time::{Duration, Instant};
 use tokio::io::{AsyncReadExt, AsyncWriteExt};
 use tokio::net::lookup_host;
 use tokio_rustls::TlsConnector;
 use tracing::{debug, warn};
+
+const DNS_CACHE_TTL: Duration = Duration::from_secs(300);
+
+#[derive(Clone)]
+struct CachedLookup {
+    addrs: Vec<IpAddr>,
+    at: Instant,
+}
 
 #[derive(Clone)]
 pub struct DnsRouter {
@@ -25,6 +34,10 @@ pub struct DnsRouter {
     reverse_fake: Arc<Mutex<HashMap<IpAddr, String>>>,
     /// Late-bound so DNS `detour` can send queries through RSQ/RST after outbounds exist.
     outbounds: Arc<OnceLock<Arc<SharedOutboundManager>>>,
+    /// Positive A/AAAA cache — browser parallel CONNECT to same host shares one resolve.
+    lookup_cache: Arc<Mutex<HashMap<String, CachedLookup>>>,
+    /// Singleflight gates per hostname (avoid N concurrent UDP queries via RST).
+    lookup_inflight: Arc<Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>>,
 }
 
 #[derive(Clone)]
@@ -86,6 +99,8 @@ impl DnsRouter {
             fakeip,
             reverse_fake: Arc::new(Mutex::new(HashMap::new())),
             outbounds: Arc::new(OnceLock::new()),
+            lookup_cache: Arc::new(Mutex::new(HashMap::new())),
+            lookup_inflight: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 
@@ -109,6 +124,62 @@ impl DnsRouter {
         if host.parse::<IpAddr>().is_ok() {
             return Ok(vec![host.parse()?]);
         }
+        let key = host.to_ascii_lowercase();
+        if let Some(addrs) = self.cache_get(&key) {
+            return Ok(addrs);
+        }
+
+        let gate = {
+            let mut map = self
+                .lookup_inflight
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
+            map.entry(key.clone())
+                .or_insert_with(|| Arc::new(tokio::sync::Mutex::new(())))
+                .clone()
+        };
+        let _guard = gate.lock().await;
+        if let Some(addrs) = self.cache_get(&key) {
+            return Ok(addrs);
+        }
+
+        let addrs = self.lookup_uncached(host).await?;
+        if !addrs.is_empty() {
+            self.cache_put(&key, addrs.clone());
+        }
+        {
+            let mut map = self
+                .lookup_inflight
+                .lock()
+                .unwrap_or_else(|e| e.into_inner());
+            map.remove(&key);
+        }
+        Ok(addrs)
+    }
+
+    fn cache_get(&self, key: &str) -> Option<Vec<IpAddr>> {
+        let mut map = self.lookup_cache.lock().unwrap_or_else(|e| e.into_inner());
+        if let Some(entry) = map.get(key) {
+            if entry.at.elapsed() < DNS_CACHE_TTL && !entry.addrs.is_empty() {
+                return Some(entry.addrs.clone());
+            }
+        }
+        map.remove(key);
+        None
+    }
+
+    fn cache_put(&self, key: &str, addrs: Vec<IpAddr>) {
+        let mut map = self.lookup_cache.lock().unwrap_or_else(|e| e.into_inner());
+        map.insert(
+            key.to_string(),
+            CachedLookup {
+                addrs,
+                at: Instant::now(),
+            },
+        );
+    }
+
+    async fn lookup_uncached(&self, host: &str) -> Result<Vec<IpAddr>> {
         let mut pinned = None;
         let mut current = self;
         let mut attempted = Vec::new();

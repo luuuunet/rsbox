@@ -16,6 +16,7 @@ use std::sync::Arc;
 use std::task::{Context as TaskContext, Poll};
 use std::time::{Duration, Instant};
 use tokio::io::{AsyncRead, AsyncReadExt, AsyncWriteExt, ReadBuf};
+use tokio::sync::Semaphore;
 
 static SESSION_COUNTER: AtomicU32 = AtomicU32::new(1);
 
@@ -23,6 +24,18 @@ const DEFAULT_IDLE_TIMEOUT: Duration = Duration::from_secs(30);
 const DEFAULT_KEEP_ALIVE: Duration = Duration::from_secs(10);
 const DEFAULT_STREAM_OPEN_TIMEOUT: Duration = Duration::from_secs(15);
 const DEFAULT_MAX_SESSION_AGE: Duration = Duration::from_secs(30 * 60);
+/// Cap concurrent dial_tcp on one RST session so browser parallel CONNECTs
+/// queue instead of stampeding the node egress (which yields mass 502).
+const DEFAULT_DIAL_CONCURRENCY: usize = 16;
+/// Fail fast when the dial queue is full — but wait long enough for
+/// image-heavy pages (CrazyGames etc.) to drain instead of fail→retry lag.
+const DIAL_ACQUIRE_TIMEOUT: Duration = Duration::from_secs(12);
+/// Hard ceiling for one dial after acquiring a permit (open stream + TCP req).
+const DIAL_WORK_TIMEOUT: Duration = Duration::from_secs(8);
+/// Auth must not hang: otherwise connect_inflight sticks and all dials wedge.
+const AUTH_TIMEOUT: Duration = Duration::from_secs(8);
+/// Rebuild wedged session after this many consecutive timeout-like dial fails.
+const WEDGE_REBUILD_AFTER: u32 = 2;
 
 struct RstSession {
     _endpoint: Endpoint,
@@ -37,6 +50,10 @@ struct RstShared {
     connect_inflight: AtomicBool,
     connect_notify: tokio::sync::Notify,
     generation: AtomicU32,
+    dial_sem: Semaphore,
+    /// Consecutive dial failures that look like a wedged session (timeouts).
+    /// Stream-level rejects do not increment this — avoids mass-reset under concurrency.
+    consecutive_timeouts: AtomicU32,
 }
 
 pub struct RstOutbound {
@@ -80,6 +97,12 @@ impl RstOutbound {
             .or_else(|| raw.get("use_brutal"))
             .and_then(|v| v.as_bool())
             .unwrap_or(true);
+        let dial_concurrency = raw
+            .get("dial_concurrency")
+            .and_then(|v| v.as_u64())
+            .map(|n| n as usize)
+            .filter(|&n| n > 0)
+            .unwrap_or(DEFAULT_DIAL_CONCURRENCY);
 
         Ok(Self {
             tag,
@@ -130,6 +153,8 @@ impl RstOutbound {
                 connect_inflight: AtomicBool::new(false),
                 connect_notify: tokio::sync::Notify::new(),
                 generation: AtomicU32::new(0),
+                dial_sem: Semaphore::new(dial_concurrency),
+                consecutive_timeouts: AtomicU32::new(0),
             }),
         })
     }
@@ -293,6 +318,8 @@ impl RstOutbound {
         };
 
         tokio::pin!(auth_fut);
+        let deadline = tokio::time::sleep(AUTH_TIMEOUT);
+        tokio::pin!(deadline);
         loop {
             tokio::select! {
                 result = &mut auth_fut => {
@@ -304,6 +331,9 @@ impl RstOutbound {
                 }
                 closed = std::future::poll_fn(|cx| driver.poll_close(cx)) => {
                     anyhow::bail!("rst: h3 connection closed during auth: {closed:?}");
+                }
+                _ = &mut deadline => {
+                    anyhow::bail!("rst: auth timeout");
                 }
             }
         }
@@ -325,34 +355,56 @@ impl RstOutbound {
         destination: SocketAddr,
         domain: Option<&str>,
     ) -> Result<ProxyConn, BoxError> {
-        let conn = self.get_connection().await?;
-        let (mut send, mut recv) = self
-            .open_bi_with_timeout(&conn)
-            .await
-            .context("open rst stream")?;
-
-        let target = if !destination.ip().is_unspecified() {
-            format_address(destination)
-        } else if let Some(domain) = domain {
-            format!("{}:{}", domain, destination.port())
+        // DNS detour (port 53) must NOT share the browser dial queue.
+        // Otherwise: CONNECT waits on DNS, DNS waits on dial_sem → total wedge
+        // → browser ERR_TUNNEL_CONNECTION_FAILED / CONNECT 502.
+        let _permit = if destination.port() == 53 {
+            None
         } else {
-            format_address(destination)
+            match tokio::time::timeout(DIAL_ACQUIRE_TIMEOUT, self.shared.dial_sem.acquire()).await {
+                Ok(Ok(p)) => Some(p),
+                Ok(Err(_)) => return Err(anyhow::anyhow!("rst: dial semaphore closed").into()),
+                Err(_) => return Err(anyhow::anyhow!("rst: dial queue timeout").into()),
+            }
         };
 
-        let padding_len = auth::random_padding_len(64, 512);
-        let req = protocol::encode_tcp_request(&target, padding_len);
-        send.write_all(&req).await?;
+        let work = async {
+            let conn = self.get_connection().await?;
+            let (mut send, mut recv) = self
+                .open_bi_with_timeout(&conn)
+                .await
+                .context("open rst stream")?;
 
-        let (ok, prefix) = read_tcp_response(&mut recv).await?;
-        if !ok {
-            anyhow::bail!("rst tcp request rejected");
+            let target = if !destination.ip().is_unspecified() {
+                format_address(destination)
+            } else if let Some(domain) = domain {
+                format!("{}:{}", domain, destination.port())
+            } else {
+                format_address(destination)
+            };
+
+            let padding_len = auth::random_padding_len(64, 512);
+            let req = protocol::encode_tcp_request(&target, padding_len);
+            tokio::time::timeout(Duration::from_secs(5), send.write_all(&req))
+                .await
+                .map_err(|_| anyhow::anyhow!("rst: write tcp request timeout"))??;
+
+            let (ok, prefix) = read_tcp_response(&mut recv).await?;
+            if !ok {
+                anyhow::bail!("rst tcp request rejected");
+            }
+            let reader: Box<dyn AsyncRead + Send + Unpin> = if prefix.is_empty() {
+                Box::new(recv)
+            } else {
+                Box::new(PrefixedReader::new(recv, prefix))
+            };
+            Ok::<ProxyConn, BoxError>(Box::new(SplitProxy::new(reader, send)))
+        };
+
+        match tokio::time::timeout(DIAL_WORK_TIMEOUT, work).await {
+            Ok(r) => r,
+            Err(_) => Err(anyhow::anyhow!("rst: dial work timeout").into()),
         }
-        let reader: Box<dyn AsyncRead + Send + Unpin> = if prefix.is_empty() {
-            Box::new(recv)
-        } else {
-            Box::new(PrefixedReader::new(recv, prefix))
-        };
-        Ok(Box::new(SplitProxy::new(reader, send)))
     }
 
     async fn reset_session(&self) {
@@ -361,6 +413,27 @@ impl RstOutbound {
             s.connection.close(0u32.into(), b"rst reset");
         }
         self.shared.generation.fetch_add(1, Ordering::Relaxed);
+    }
+
+    /// True when there is no live QUIC session (or it already closed).
+    ///
+    /// Stream-level errors must not use this as a cue to tear down siblings —
+    /// only the connection's own close_reason / absence.
+    async fn session_connection_dead(&self) -> bool {
+        let guard = self.shared.session.lock().await;
+        match guard.as_ref() {
+            None => true,
+            Some(s) => s.connection.close_reason().is_some(),
+        }
+    }
+
+    fn is_timeout_like(err: &dyn std::fmt::Display) -> bool {
+        let msg = err.to_string().to_lowercase();
+        msg.contains("timeout")
+            || msg.contains("timed out")
+            || msg.contains("time out")
+            || msg.contains("dial queue")
+            || msg.contains("saturated")
     }
 }
 
@@ -445,19 +518,59 @@ impl Outbound for RstOutbound {
         domain: Option<&str>,
     ) -> Result<ProxyConn, BoxError> {
         match self.dial_tcp_inner(destination, domain).await {
-            Ok(c) => Ok(c),
+            Ok(c) => {
+                self.shared
+                    .consecutive_timeouts
+                    .store(0, Ordering::Relaxed);
+                Ok(c)
+            }
             Err(err) => {
-                let msg = err.to_string().to_lowercase();
-                if msg.contains("auth")
-                    || msg.contains("quic")
-                    || msg.contains("h3")
-                    || msg.contains("closed")
-                    || msg.contains("reset")
-                {
+                // 1) QUIC connection already dead → rebuild once.
+                if self.session_connection_dead().await {
+                    tracing::warn!(
+                        error = %err,
+                        "rst: session dead after dial fail; rebuild once"
+                    );
                     self.reset_session().await;
-                    Ok(self.dial_tcp_inner(destination, domain).await?)
-                } else {
-                    Err(err)
+                    self.shared
+                        .consecutive_timeouts
+                        .store(0, Ordering::Relaxed);
+                    return Ok(self.dial_tcp_inner(destination, domain).await?);
+                }
+
+                // 2) Stream isolation for non-timeout errors (reject / stream closed):
+                //    fail only this dial — do NOT reset (browser parallel stampede).
+                if !Self::is_timeout_like(&err) {
+                    return Err(err);
+                }
+
+                // 3) Timeout-like: session may be wedged while still "open".
+                //    After several consecutive timeouts, rebuild once.
+                let n = self
+                    .shared
+                    .consecutive_timeouts
+                    .fetch_add(1, Ordering::Relaxed)
+                    + 1;
+                if n < WEDGE_REBUILD_AFTER {
+                    return Err(err);
+                }
+                tracing::warn!(
+                    fails = n,
+                    error = %err,
+                    "rst: consecutive dial timeouts; rebuild wedged session"
+                );
+                self.reset_session().await;
+                self.shared
+                    .consecutive_timeouts
+                    .store(0, Ordering::Relaxed);
+                match self.dial_tcp_inner(destination, domain).await {
+                    Ok(c) => {
+                        self.shared
+                            .consecutive_timeouts
+                            .store(0, Ordering::Relaxed);
+                        Ok(c)
+                    }
+                    Err(e2) => Err(e2),
                 }
             }
         }

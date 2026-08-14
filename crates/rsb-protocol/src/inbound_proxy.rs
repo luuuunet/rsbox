@@ -30,7 +30,8 @@ const RELAY_IDLE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(6
 const RELAY_WRITE_IDLE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(30);
 const OUTBOUND_DIAL_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
 const PROXY_DIAL_ACQUIRE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(2);
-const RESOLVE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(3);
+/// DNS via RST may need a stream open; keep above dial work budget but short.
+const RESOLVE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(8);
 const RELAY_BUF_SIZE: usize = 16 * 1024;
 
 /// 连接生命周期计数：accept→close 全程持有，Drop 时自动 -1。
