@@ -16,7 +16,7 @@ const MAX_CONCURRENT_INBOUND: usize = 256;
 const MAX_ACTIVE_CONNECTIONS: usize = 512;
 /// outbound dial 全局限流（仅代理链路）。直连绝不能进此队列，
 /// 否则节点卡死时百度等国内站 CONNECT 也会被拖成「假死」。
-const MAX_CONCURRENT_DIALS: usize = 32;
+const MAX_CONCURRENT_DIALS: usize = 16;
 const INBOUND_ACQUIRE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(2);
 /// 读完代理请求头的上限；超时必须释许可，否则 CLOSE_WAIT/假死。
 const HANDSHAKE_IO_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(3);
@@ -27,10 +27,12 @@ const RELAY_TOTAL_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(
 const RELAY_IDLE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15);
 /// 写半死远端必须更快失败，否则卡在 write 时读不到客户端 FIN → CLOSE_WAIT。
 const RELAY_WRITE_IDLE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
-const OUTBOUND_DIAL_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(4);
-const PROXY_DIAL_ACQUIRE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(1);
+const OUTBOUND_DIAL_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(3);
+const PROXY_DIAL_ACQUIRE_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(800);
 /// DNS via RST may need a stream open; keep above dial work budget but short.
-const RESOLVE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+const RESOLVE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(3);
+/// CONNECT 全路径（resolve+dial）硬顶，超时立刻 RST，避免 Windows CLOSE_WAIT 雪崩。
+const CONNECT_HARD_BUDGET: std::time::Duration = std::time::Duration::from_secs(5);
 const RELAY_BUF_SIZE: usize = 16 * 1024;
 
 /// 连接生命周期计数：accept→close 全程持有，Drop 时自动 -1。
@@ -495,8 +497,10 @@ impl Inbound for MixedInbound {
                                 }
                             }
 
+                            // 失败/结束一律 linger-0 RST，跳过 graceful drain（drain+shutdown
+                            // 在 Windows 上反而容易把已 FIN 的入站留在 CLOSE_WAIT）。
                             abort_inbound_socket(&stream);
-                            close_inbound_stream(&mut stream).await;
+                            drop(stream);
                         });
                     }
                 }
@@ -724,21 +728,25 @@ async fn handle_http_connect(
 
         // 先拨号再回 200：旧逻辑「先 200 再拨号」在 outbound/RSQ 卡住时，
         // 浏览器会认为隧道已通并狂发连接，最终 CLOSE_WAIT 堆积、新 CONNECT 无响应。
-        let remote = match dial_tcp_only(
-            &mut stream,
-            peer,
-            inbound_tag,
-            inbound_type,
-            dialer,
-            dns,
-            dest,
-            domain,
+        // 全路径硬顶：超时立刻失败，避免 resolve+dial 叠超时把入站拖死。
+        let dial_result = tokio::time::timeout(
+            CONNECT_HARD_BUDGET,
+            dial_tcp_only(
+                &mut stream,
+                peer,
+                inbound_tag,
+                inbound_type,
+                dialer,
+                dns,
+                dest,
+                domain,
+            ),
         )
-        .await
-        {
-            Ok(Some(r)) => r,
-            Ok(None) => return Ok(()),
-            Err(err) => {
+        .await;
+        let remote = match dial_result {
+            Ok(Ok(Some(r))) => r,
+            Ok(Ok(None)) => return Ok(()),
+            Ok(Err(err)) => {
                 let _ = send_http_error(
                     &mut stream,
                     502,
@@ -747,6 +755,17 @@ async fn handle_http_connect(
                 )
                 .await;
                 return Err(err);
+            }
+            Err(_) => {
+                abort_inbound_socket(&stream);
+                let _ = send_http_error(
+                    &mut stream,
+                    504,
+                    "Gateway Timeout",
+                    "outbound dial budget exceeded",
+                )
+                .await;
+                anyhow::bail!("CONNECT hard budget exceeded after {CONNECT_HARD_BUDGET:?}");
             }
         };
         let mut remote = remote;
@@ -1377,7 +1396,6 @@ pub async fn relay_proxy(a: &mut TcpStream, b: ProxyConn) -> Result<()> {
     .await;
 
     abort_inbound_socket(a);
-    close_inbound_stream(a).await;
 
     match copy {
         Ok(Ok(())) => Ok(()),

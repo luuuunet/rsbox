@@ -22,13 +22,15 @@ fn next_udp_session_id() -> u32 {
 const DEFAULT_IDLE_TIMEOUT: Duration = Duration::from_secs(30);
 const DEFAULT_KEEP_ALIVE: Duration = Duration::from_secs(10);
 /// 僵尸会话要尽快发现；过长会导致 mixed CONNECT 全超时 + CLOSE_WAIT。
-const DEFAULT_PROBE_INTERVAL: Duration = Duration::from_secs(5);
-const PROBE_STREAM_TIMEOUT: Duration = Duration::from_secs(2);
-const DEFAULT_STREAM_OPEN_TIMEOUT: Duration = Duration::from_secs(4);
+const DEFAULT_PROBE_INTERVAL: Duration = Duration::from_secs(3);
+const PROBE_STREAM_TIMEOUT: Duration = Duration::from_secs(1);
+const DEFAULT_STREAM_OPEN_TIMEOUT: Duration = Duration::from_secs(3);
 const DEFAULT_MAX_SESSION_AGE: Duration = Duration::from_secs(30 * 60);
-const TCP_OPEN_REPLY_TIMEOUT: Duration = Duration::from_secs(3);
-const DEFAULT_DIAL_CONCURRENCY: usize = 16;
-const DIAL_ACQUIRE_TIMEOUT: Duration = Duration::from_secs(2);
+const TCP_OPEN_REPLY_TIMEOUT: Duration = Duration::from_secs(2);
+const AUTH_IO_TIMEOUT: Duration = Duration::from_secs(3);
+const CONNECT_WAIT_TIMEOUT: Duration = Duration::from_secs(4);
+const DEFAULT_DIAL_CONCURRENCY: usize = 8;
+const DIAL_ACQUIRE_TIMEOUT: Duration = Duration::from_secs(1);
 
 struct RsqSession {
     endpoint: Endpoint,
@@ -215,7 +217,18 @@ impl RsqOutbound {
                 return self.establish_session().await;
             }
 
-            self.inner.shared.connect_notify.notified().await;
+            // 绝不无限等：建连卡住时旧逻辑会让所有 dial 挂死 → mixed CLOSE_WAIT。
+            match tokio::time::timeout(
+                CONNECT_WAIT_TIMEOUT,
+                self.inner.shared.connect_notify.notified(),
+            )
+            .await
+            {
+                Ok(()) => continue,
+                Err(_) => {
+                    anyhow::bail!("rsq: wait for session connect timed out");
+                }
+            }
         }
     }
 
@@ -413,11 +426,12 @@ impl RsqOutbound {
         let mut buf = BytesMut::new();
         let mut chunk = [0u8; 4096];
         let auth_ok = loop {
-            let n = recv
-                .read(&mut chunk)
-                .await
-                .context("read auth resp")?
-                .ok_or_else(|| anyhow::anyhow!("rsq: auth stream closed"))?;
+            let n = match tokio::time::timeout(AUTH_IO_TIMEOUT, recv.read(&mut chunk)).await {
+                Ok(Ok(Some(n))) => n,
+                Ok(Ok(None)) => anyhow::bail!("rsq: auth stream closed"),
+                Ok(Err(e)) => return Err(e).context("read auth resp"),
+                Err(_) => anyhow::bail!("rsq: auth read timeout"),
+            };
             buf.extend_from_slice(&chunk[..n]);
             if let Some(frame) = protocol::try_decode_frame(&buf)? {
                 break auth::decode_auth_ok(&frame)?;
@@ -569,6 +583,10 @@ impl Outbound for RsqOutbound {
                 Ok(conn)
             }
             Err(first) => {
+                if should_fail_fast_without_retry(&first) {
+                    // 队列满不是僵尸会话：重置只会雪崩，直接失败让 inbound 快 RST。
+                    return Err(first);
+                }
                 if should_reset_rsq_session(&first) {
                     let n = self
                         .inner
@@ -648,6 +666,13 @@ async fn reset_session(shared: &RsqShared, reason: &str) {
     }
 }
 
+fn should_fail_fast_without_retry(err: &BoxError) -> bool {
+    let msg = err.to_string().to_lowercase();
+    msg.contains("dial queue timeout")
+        || msg.contains("wait for session connect timed out")
+        || msg.contains("outbound dial concurrency saturated")
+}
+
 fn should_reset_rsq_session(err: &BoxError) -> bool {
     let msg = err.to_string().to_lowercase();
     msg.contains("auth")
@@ -660,7 +685,7 @@ fn should_reset_rsq_session(err: &BoxError) -> bool {
         || msg.contains("open stream timeout")
         || msg.contains("read tcp reply timeout")
         || msg.contains("stream closed before tcp reply")
-        || msg.contains("dial queue timeout")
+        || msg.contains("auth read timeout")
 }
 
 fn format_address(addr: SocketAddr) -> String {
