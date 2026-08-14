@@ -263,9 +263,10 @@ impl Router for RuleRouter {
             }
             if rule.ip_is_private {
                 let Some(dest) = metadata.destination else {
+                    // 域名未解析：跳过，让后续域名规则 / route.final（节点）接手
                     continue;
                 };
-                if !is_private_ip(dest.ip()) {
+                if dest.ip().is_unspecified() || !is_private_ip(dest.ip()) {
                     continue;
                 }
                 return Ok(rule_outbound(rule).unwrap_or(self.default_tag.clone()));
@@ -283,22 +284,20 @@ impl Router for RuleRouter {
                 }
                 if !matched {
                     for code in &rule.geoip {
-                        if code == "private"
-                            && metadata
-                                .destination
-                                .map(|d| is_private_ip(d.ip()))
-                                .unwrap_or(false)
-                        {
+                        let Some(dest) = metadata.destination else {
+                            // 无 IP 时不做 geoip（含 private/0.0.0.0/8），避免 CONNECT 域名误直连
+                            continue;
+                        };
+                        if dest.ip().is_unspecified() {
+                            continue;
+                        }
+                        if code == "private" && is_private_ip(dest.ip()) {
                             matched = true;
                             break;
                         }
                         let tag = format!("geoip-{code}");
                         if let Some(rs) = self.rule_sets.get(&tag) {
-                            if metadata
-                                .destination
-                                .map(|d| geoip_rule_set_matches(rs, d.ip()))
-                                .unwrap_or(false)
-                            {
+                            if geoip_rule_set_matches(rs, dest.ip()) {
                                 matched = true;
                                 break;
                             }

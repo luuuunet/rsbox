@@ -966,15 +966,18 @@ async fn resolve_for_connect(
     process_path: Option<String>,
 ) -> Result<(SocketAddr, Metadata, bool)> {
     let port = dest.port();
+    // 域名尚未解析时 destination 必须为 None。
+    // 旧逻辑填 0.0.0.0 会命中 geoip:private（含 0.0.0.0/8）→ 误直连，
+    // 导致白名单外海外站走系统 DNS（污染）而打不开；未命中国内规则应走 route.final 节点。
     let route_dest = if dest.ip().is_unspecified() {
-        SocketAddr::from(([0, 0, 0, 0], port))
+        None
     } else {
-        dest
+        Some(dest)
     };
     let metadata_for_route = Metadata {
         network: Network::Tcp,
         source: Some(peer),
-        destination: Some(route_dest),
+        destination: route_dest,
         domain: domain.clone(),
         protocol: Some("https".to_string()),
         process_name,
