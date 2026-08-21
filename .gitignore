@@ -39,11 +39,13 @@ Thumbs.db
 # Testing
 coverage/
 
-# Documentation (keep only project README)
+# Documentation (keep project README + docs/)
 /target/doc/
 *.md
 !README.md
 !examples/README.md
+!examples/**/*.md
+!docs/**/*.md
 !LICENSE
 !.github/**/*.md
 
