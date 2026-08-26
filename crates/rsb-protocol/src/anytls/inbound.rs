@@ -1,4 +1,4 @@
-//! sing-box compatible AnyTLS inbound (via anytls-rs server).
+//! AnyTLS inbound (via anytls-rs server).
 
 use crate::anytls::UserRelayHandler;
 use crate::direct::parse_listen;

@@ -1,4 +1,4 @@
-//! REALITY dest mirror: fetch ServerHello from handshake target (Xray/sing-box compatible).
+//! REALITY dest mirror: fetch ServerHello from handshake target (Xray-compatible).
 
 use anyhow::{Context, Result};
 use rand::RngCore;

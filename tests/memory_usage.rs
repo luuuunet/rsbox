@@ -1,5 +1,5 @@
 // 内存占用测试脚本
-// 用于对比 rsbox 和 sing-box 的内存使用情况
+// 用于对比 rsbox 内存使用情况
 
 use std::process::{Command, Stdio};
 use std::thread;

@@ -34,7 +34,7 @@ impl ShadowTlsInbound {
         let v3 = if version == 3 {
             Some(parse_v3_config(&raw, inbound_addrs)?)
         } else {
-            anyhow::bail!("shadowtls inbound: only version 3 is supported natively (use sing-box sidecar for v1/v2)");
+            anyhow::bail!("shadowtls inbound: only version 3 is supported natively (use external sidecar for v1/v2)");
         };
         let (shutdown, _) = tokio::sync::watch::channel(false);
         Ok(Self {

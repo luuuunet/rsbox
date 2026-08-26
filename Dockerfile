@@ -25,7 +25,7 @@ RUN cargo build --release -p rsbox --features rsb-protocol/wireguard-tunnel && \
 FROM debian:bookworm-slim
 
 LABEL maintainer="rsbox team"
-LABEL description="rsbox - Rust sing-box compatible proxy platform"
+LABEL description="rsbox - rsbox proxy platform (RSQ / RST / Hysteria2)"
 
 # Install runtime dependencies
 RUN apt-get update && \

@@ -40,7 +40,7 @@ struct Hy2Session {
 
 struct Hy2Shared {
     session: tokio::sync::Mutex<Option<Hy2Session>>,
-    /// Coalesce concurrent QUIC handshakes (sing-box clientOffer pattern).
+    /// Coalesce concurrent QUIC handshakes (clientOffer pattern).
     connect_inflight: AtomicBool,
     connect_notify: tokio::sync::Notify,
     current_port: AtomicU16,

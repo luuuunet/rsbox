@@ -1,4 +1,4 @@
-//! Dial an outbound's server address through another outbound (sing-box `detour`).
+//! Dial an outbound's server address through another outbound (`detour`).
 
 use crate::transport::{self, TlsIo};
 use rsb_core::{proxy_box, BoxError, ProxyConn, SharedOutboundManager};

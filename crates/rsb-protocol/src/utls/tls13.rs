@@ -211,7 +211,7 @@ where
     }
 
     let app = if auth_key.is_some() {
-        // REALITY (Go/sing-box): app traffic keys omit client Finished in transcript.
+        // REALITY (Go): app traffic keys omit client Finished in transcript.
         derive_application_keys(hash, &hs.hs_secret, &transcript, key_len)?
     } else {
         let client_finished = build_finished(hash, &hs.client_secret, &transcript);
@@ -542,7 +542,7 @@ where
     Ok(())
 }
 
-/// REALITY/sing-box: coalesce encrypted handshake into one TLS record (seq stays 0).
+/// REALITY: coalesce encrypted handshake into one TLS record (seq stays 0).
 async fn write_encrypted_handshake_combined<S>(
     stream: &mut S,
     cipher: &Tls13Cipher,
@@ -955,7 +955,7 @@ pub mod server {
         .await
     }
 
-    /// REALITY with dest-mirrored ServerHello (sing-box / uTLS compatible).
+    /// REALITY with dest-mirrored ServerHello (uTLS compatible).
     pub async fn accept_reality_mirror(
         stream: TcpStream,
         session: &VerifiedSession,
@@ -1043,7 +1043,7 @@ pub mod server {
         enc_flight.context("write server encrypted flight")?;
         transcript.extend_from_slice(&server_msgs);
 
-        // REALITY server (Xray/sing-box): derive app keys after ServerFinished without
+        // REALITY server (Xray): derive app keys after ServerFinished without
         // waiting for client Finished. Client Finished may still arrive encrypted; drain it.
         let app = derive_application_keys(hash, &hs.hs_secret, &transcript, key_len)?;
         let _ = drain_client_finished(&mut stream, &read_cipher, &hs.write_iv).await;
@@ -1204,7 +1204,7 @@ pub mod server {
         hs.extend_from_slice(&cipher.to_be_bytes());
         hs.push(0x00); // compression
         let mut exts = Vec::new();
-        // Go crypto/tls / sing-box REALITY: supported_versions before key_share.
+        // Go crypto/tls REALITY: supported_versions before key_share.
         exts.extend_from_slice(&[0x00, 0x2b, 0x00, 0x02, 0x03, 0x04]);
         exts.extend_from_slice(&[0x00, 0x33, 0x00, 0x24]);
         exts.extend_from_slice(&[0x00, 0x1d, 0x00, 0x20]);

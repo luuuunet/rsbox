@@ -154,7 +154,7 @@ pub struct RouteRule {
     pub geosite: Vec<String>,
     #[serde(default)]
     pub geoip: Vec<String>,
-    /// sing-box compatible: match RFC1918 / link-local / loopback destinations.
+    /// rsbox: match RFC1918 / link-local / loopback destinations.
     #[serde(default)]
     pub ip_is_private: bool,
     #[serde(default)]

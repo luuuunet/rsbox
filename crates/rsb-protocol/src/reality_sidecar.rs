@@ -1,4 +1,4 @@
-//! sing-box sidecar for VLESS+REALITY outbounds (full uTLS handshake).
+//! External sidecar helper for legacy REALITY outbounds (not used by RSQ/RST/Hy2).
 
 use anyhow::{Context, Result};
 use async_trait::async_trait;
@@ -24,16 +24,19 @@ fn sidecar_slot() -> &'static Mutex<Option<SidecarState>> {
     SIDECAR.get_or_init(|| Mutex::new(None))
 }
 
-pub fn find_singbox() -> Option<PathBuf> {
-    if let Ok(p) = std::env::var("RSBOX_SINGBOX_PATH") {
-        let path = PathBuf::from(p);
-        if path.is_file() {
-            return Some(path);
+/// Resolve an optional external sidecar binary (`RSBOX_SIDECAR_PATH`).
+pub fn find_sidecar_binary() -> Option<PathBuf> {
+    for key in ["RSBOX_SIDECAR_PATH"] {
+        if let Ok(p) = std::env::var(key) {
+            let path = PathBuf::from(p);
+            if path.is_file() {
+                return Some(path);
+            }
         }
     }
     if let Ok(exe) = std::env::current_exe() {
         if let Some(dir) = exe.parent() {
-            for name in ["sing-box.exe", "sing-box"] {
+            for name in ["rsbox-sidecar.exe", "rsbox-sidecar"] {
                 let candidate = dir.join(name);
                 if candidate.is_file() {
                     return Some(candidate);
@@ -41,13 +44,13 @@ pub fn find_singbox() -> Option<PathBuf> {
             }
         }
     }
-    which_singbox()
+    which_sidecar()
 }
 
-fn which_singbox() -> Option<PathBuf> {
+fn which_sidecar() -> Option<PathBuf> {
     std::env::var_os("PATH").and_then(|paths| {
         for dir in std::env::split_paths(&paths) {
-            for name in ["sing-box.exe", "sing-box"] {
+            for name in ["rsbox-sidecar.exe", "rsbox-sidecar"] {
                 let candidate = dir.join(name);
                 if candidate.is_file() {
                     return Some(candidate);
@@ -97,14 +100,14 @@ fn sidecar_config(vless: &Value, listen_port: u16) -> Value {
     })
 }
 
-/// Start sing-box sidecar for a VLESS+REALITY outbound if not already running.
+/// Start an external sidecar for a legacy VLESS+REALITY outbound if not already running.
 pub fn ensure(vless: &Value) -> Result<u16> {
     let mut slot = sidecar_slot().lock().expect("sidecar lock");
     if let Some(state) = slot.as_ref() {
         return Ok(state.port);
     }
-    let singbox = find_singbox().context(
-        "REALITY requires sing-box sidecar: set RSBOX_SINGBOX_PATH or place sing-box.exe next to rsbox",
+    let sidecar = find_sidecar_binary().context(
+        "REALITY legacy path needs RSBOX_SIDECAR_PATH pointing to an external proxy binary",
     )?;
     let port = pick_port();
     let dir = std::env::temp_dir().join(format!("rsbox-reality-{}", std::process::id()));
@@ -113,26 +116,26 @@ pub fn ensure(vless: &Value) -> Result<u16> {
     let config = sidecar_config(vless, port);
     std::fs::write(&config_path, serde_json::to_vec_pretty(&config)?).context("write sidecar config")?;
 
-    let check = Command::new(&singbox)
+    let check = Command::new(&sidecar)
         .args(["check", "-c"])
         .arg(&config_path)
         .output()
-        .context("sing-box check")?;
+        .context("sidecar check")?;
     if !check.status.success() {
         anyhow::bail!(
-            "sing-box check failed: {}",
+            "sidecar check failed: {}",
             String::from_utf8_lossy(&check.stderr)
         );
     }
 
-    let child = Command::new(&singbox)
+    let child = Command::new(&sidecar)
         .args(["run", "-c"])
         .arg(&config_path)
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .spawn()
-        .with_context(|| format!("spawn {}", singbox.display()))?;
+        .with_context(|| format!("spawn {}", sidecar.display()))?;
 
     std::thread::sleep(Duration::from_millis(800));
     *slot = Some(SidecarState {
@@ -156,7 +159,7 @@ impl SidecarOutbound {
     async fn connect_via_mixed(&self, destination: SocketAddr, domain: Option<&str>) -> Result<TcpStream> {
         let mut stream = TcpStream::connect(format!("127.0.0.1:{}", self.port))
             .await
-            .context("connect sing-box sidecar")?;
+            .context("connect legacy sidecar")?;
         let target = if let Some(name) = domain.filter(|d| !d.is_empty()) {
             format!("{name}:{}", destination.port())
         } else {

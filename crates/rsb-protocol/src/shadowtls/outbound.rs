@@ -1,4 +1,4 @@
-//! sing-box compatible ShadowTLS outbound (v1/v2/v3 tunnel).
+//! ShadowTLS outbound (v1/v2/v3 tunnel).
 
 use crate::shadowtls::client;
 use anyhow::{Context, Result};

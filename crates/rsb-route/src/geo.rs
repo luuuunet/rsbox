@@ -26,7 +26,7 @@ pub fn builtin_geoip_private_cidrs() -> Vec<String> {
 
 /// Comprehensive China-direct rule list for smart split.
 ///
-/// Uses SagerNet `geosite-cn` / `geoip-cn` (community-maintained, very large)
+/// Uses community `geosite-cn` / `geoip-cn` rule-sets (very large)
 /// plus `.cn` / private fallbacks so offline / download-fail still works.
 pub fn china_direct_rules(direct_tag: &str) -> Vec<RouteRule> {
     let direct = Some(direct_tag.to_string());

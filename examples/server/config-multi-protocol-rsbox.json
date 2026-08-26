@@ -17,8 +17,8 @@
       "tls": {
         "enabled": true,
         "server_name": "s.lulunet.cc",
-        "certificate_path": "/etc/sing-box/fullchain.pem",
-        "key_path": "/etc/sing-box/privkey.pem"
+        "certificate_path": "/etc/rsbox/fullchain.pem",
+        "key_path": "/etc/rsbox/privkey.pem"
       }
     },
     {
@@ -63,8 +63,8 @@
       "tls": {
         "enabled": true,
         "server_name": "s.lulunet.cc",
-        "certificate_path": "/etc/sing-box/fullchain.pem",
-        "key_path": "/etc/sing-box/privkey.pem"
+        "certificate_path": "/etc/rsbox/fullchain.pem",
+        "key_path": "/etc/rsbox/privkey.pem"
       }
     },
     {
@@ -80,8 +80,8 @@
       "tls": {
         "enabled": true,
         "server_name": "s.lulunet.cc",
-        "certificate_path": "/etc/sing-box/fullchain.pem",
-        "key_path": "/etc/sing-box/privkey.pem"
+        "certificate_path": "/etc/rsbox/fullchain.pem",
+        "key_path": "/etc/rsbox/privkey.pem"
       }
     },
     {
@@ -97,8 +97,8 @@
       "tls": {
         "enabled": true,
         "server_name": "s.lulunet.cc",
-        "certificate_path": "/etc/sing-box/fullchain.pem",
-        "key_path": "/etc/sing-box/privkey.pem"
+        "certificate_path": "/etc/rsbox/fullchain.pem",
+        "key_path": "/etc/rsbox/privkey.pem"
       }
     },
     {
@@ -114,8 +114,8 @@
       "tls": {
         "enabled": true,
         "server_name": "s.lulunet.cc",
-        "certificate_path": "/etc/sing-box/fullchain.pem",
-        "key_path": "/etc/sing-box/privkey.pem"
+        "certificate_path": "/etc/rsbox/fullchain.pem",
+        "key_path": "/etc/rsbox/privkey.pem"
       }
     },
     {
@@ -167,8 +167,8 @@
       "tls": {
         "enabled": true,
         "server_name": "s.lulunet.cc",
-        "certificate_path": "/etc/sing-box/fullchain.pem",
-        "key_path": "/etc/sing-box/privkey.pem"
+        "certificate_path": "/etc/rsbox/fullchain.pem",
+        "key_path": "/etc/rsbox/privkey.pem"
       },
       "obfs": {
         "enabled": true,

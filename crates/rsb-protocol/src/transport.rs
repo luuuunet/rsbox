@@ -297,7 +297,7 @@ pub fn sha224_hex(data: &str) -> String {
     hash.iter().map(|b| format!("{b:02x}")).collect()
 }
 
-/// sing-box trojan key: hex-encoded SHA-224(password) as 56 ASCII bytes.
+/// Trojan key: hex-encoded SHA-224(password) as 56 ASCII bytes.
 pub fn trojan_key(password: &str) -> [u8; 56] {
     use sha2::{Digest, Sha224};
     let hash = Sha224::digest(password.as_bytes());
@@ -316,7 +316,7 @@ fn hex_digit(v: u8) -> u8 {
 const TROJAN_CMD_TCP: u8 = 1;
 const TROJAN_CMD_UDP: u8 = 3;
 
-/// sing-box / trojan-go binary request header.
+/// Trojan-go binary request header.
 pub fn encode_trojan_request(key: &[u8; 56], dest: SocketAddr, command: u8) -> Vec<u8> {
     let mut buf = Vec::with_capacity(56 + 2 + 1 + 20 + 2);
     buf.extend_from_slice(key);

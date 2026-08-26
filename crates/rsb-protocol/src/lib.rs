@@ -26,7 +26,7 @@ pub mod reality_inbound;
 pub mod reality_mirror;
 pub mod reality_session;
 pub mod reality_sidecar;
-pub mod singbox_inbound_sidecar;
+pub mod legacy_inbound_sidecar;
 pub mod registry;
 pub mod rsq;
 pub mod rst;

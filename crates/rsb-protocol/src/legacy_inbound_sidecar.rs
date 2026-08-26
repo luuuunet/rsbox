@@ -1,4 +1,4 @@
-//! sing-box sidecar for inbounds rsbox does not implement natively (e.g. VLESS+REALITY).
+//! External sidecar for legacy inbounds rsbox does not implement natively.
 
 use crate::reality_sidecar;
 use anyhow::{Context, Result};
@@ -10,7 +10,7 @@ use std::process::{Child, Command, Stdio};
 use std::sync::Mutex;
 use std::time::Duration;
 
-pub struct SingboxInboundSidecar {
+pub struct LegacyInboundSidecar {
     tag: String,
     kind: String,
     inbound: Value,
@@ -19,7 +19,7 @@ pub struct SingboxInboundSidecar {
     config_path: Mutex<Option<PathBuf>>,
 }
 
-impl SingboxInboundSidecar {
+impl LegacyInboundSidecar {
     pub fn new(tag: String, kind: String, inbound: Value) -> Self {
         let (shutdown, _) = tokio::sync::watch::channel(false);
         Self {
@@ -43,7 +43,7 @@ impl SingboxInboundSidecar {
 }
 
 #[async_trait]
-impl Inbound for SingboxInboundSidecar {
+impl Inbound for LegacyInboundSidecar {
     fn tag(&self) -> &str {
         &self.tag
     }
@@ -53,8 +53,8 @@ impl Inbound for SingboxInboundSidecar {
     }
 
     async fn start(&self) -> Result<(), BoxError> {
-        let singbox = reality_sidecar::find_singbox().context(
-            "sing-box sidecar inbound: set RSBOX_SINGBOX_PATH or place sing-box next to rsbox",
+        let sidecar = reality_sidecar::find_sidecar_binary().context(
+            "legacy inbound sidecar: set RSBOX_SIDECAR_PATH to an external proxy binary",
         )?;
         let dir = std::env::temp_dir().join(format!(
             "rsbox-inbound-{}-{}",
@@ -67,26 +67,26 @@ impl Inbound for SingboxInboundSidecar {
         std::fs::write(&config_path, serde_json::to_vec_pretty(&config)?)
             .context("write inbound sidecar config")?;
 
-        let check = Command::new(&singbox)
+        let check = Command::new(&sidecar)
             .args(["check", "-c"])
             .arg(&config_path)
             .output()
-            .context("sing-box check inbound sidecar")?;
+            .context("sidecar check inbound")?;
         if !check.status.success() {
             anyhow::bail!(
-                "sing-box check failed: {}",
+                "sidecar check failed: {}",
                 String::from_utf8_lossy(&check.stderr)
             );
         }
 
-        let child = Command::new(&singbox)
+        let child = Command::new(&sidecar)
             .args(["run", "-c"])
             .arg(&config_path)
             .stdin(Stdio::null())
             .stdout(Stdio::null())
             .stderr(Stdio::null())
             .spawn()
-            .with_context(|| format!("spawn {}", singbox.display()))?;
+            .with_context(|| format!("spawn {}", sidecar.display()))?;
 
         std::thread::sleep(Duration::from_millis(800));
         *self.child.lock().expect("sidecar lock") = Some(child);
@@ -94,7 +94,7 @@ impl Inbound for SingboxInboundSidecar {
         tracing::info!(
             tag = %self.tag,
             kind = %self.kind,
-            "sing-box inbound sidecar started"
+            "legacy inbound sidecar started"
         );
         Ok(())
     }

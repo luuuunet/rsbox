@@ -18,7 +18,7 @@ if (-not $configs) { Write-Error "No configs in $ConfigDir"; exit 1 }
 
 function Stop-Rsbox {
     taskkill /F /IM rsbox.exe 2>$null | Out-Null
-    taskkill /F /IM sing-box.exe 2>$null | Out-Null
+    # (legacy) taskkill /F /IM rsbox.exe 2>$null | Out-Null
     Start-Sleep -Seconds 1
 }
 

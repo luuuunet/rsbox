@@ -1,4 +1,4 @@
-//! gRPC control plane (sing-box experimental.api compatible subset).
+//! gRPC control plane (experimental.api subset).
 //!
 //! ⚠️ SECURITY WARNING: This gRPC API currently has NO AUTHENTICATION!
 //! Only bind to loopback (127.0.0.1) or implement authentication before exposing to network.

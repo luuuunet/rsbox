@@ -83,9 +83,9 @@ fn test_direct_outbound() {
 
 #[test]
 fn test_config_compatibility() {
-    // 测试配置格式与 sing-box 兼容性
+    // 测试配置 JSON 解析
 
-    let sing_box_config = r#"
+    let sample_config = r#"
     {
       "log": {
         "level": "info"
@@ -110,8 +110,8 @@ fn test_config_compatibility() {
     }
     "#;
 
-    let result: Result<rsb_config::Options, _> = serde_json::from_str(sing_box_config);
-    assert!(result.is_ok(), "sing-box 格式的配置应该能解析");
+    let result: Result<rsb_config::Options, _> = serde_json::from_str(sample_config);
+    assert!(result.is_ok(), "配置 JSON 应该能解析");
 }
 
 #[test]

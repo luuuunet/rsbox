@@ -115,7 +115,7 @@ pub fn build_reality_cert_der(auth_key: &[u8; 32], pubkey: &[u8; 32]) -> Vec<u8>
 }
 
 fn wrap_tls_cert_handshake(cert_der: &[u8]) -> Vec<u8> {
-    // TLS 1.3 Certificate: empty context + CertificateEntry list (sing-box / Go compatible).
+    // TLS 1.3 Certificate: empty context + CertificateEntry list (Go-compatible).
     let mut entry = Vec::with_capacity(3 + cert_der.len() + 2);
     entry.extend_from_slice(&(cert_der.len() as u32).to_be_bytes()[1..]);
     entry.extend_from_slice(cert_der);

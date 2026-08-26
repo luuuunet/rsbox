@@ -1,4 +1,4 @@
-//! Per-user policy registry for panel integration (G5 / sing-box user objects).
+//! Per-user policy registry for panel integration (G5 user objects).
 
 use dashmap::DashMap;
 use rsb_config::Options;

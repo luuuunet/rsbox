@@ -154,7 +154,7 @@ pub fn parse_client_hello_alpn(record: &[u8]) -> Option<String> {
     None
 }
 
-/// Pick TLS 1.3 cipher with Go/sing-box server preference order.
+/// Pick TLS 1.3 cipher with Go server preference order.
 pub fn pick_client_tls13_cipher(record: &[u8]) -> Option<u16> {
     const PREFERENCE: [u16; 3] = [0x1301, 0x1302, 0x1303];
     if record.len() < 5 || record[0] != 0x16 {

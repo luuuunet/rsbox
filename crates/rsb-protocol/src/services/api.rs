@@ -1,4 +1,4 @@
-//! sing-box API service (HTTP JSON control plane).
+//! rsbox API service (HTTP JSON control plane).
 
 use super::context::ServiceContext;
 use super::listen::{auth_token, parse_listen, parse_user_tokens};

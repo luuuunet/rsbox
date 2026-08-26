@@ -1,6 +1,6 @@
 //! Chain outbound — route through the last configured proxy in the chain.
 //!
-//! Full multi-hop chaining requires each outbound's `detour` field (sing-box style).
+//! Full multi-hop chaining requires each outbound's `detour` field (config style).
 //! Until detour dialing is wired, the last tag in `outbounds` handles the connection.
 
 use anyhow::{Context, Result};

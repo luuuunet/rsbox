@@ -1,4 +1,4 @@
-//! sing-box compatible AnyTLS outbound (via anytls-rs).
+//! AnyTLS outbound (via anytls-rs).
 
 use crate::duration::parse_duration_str;
 use anyhow::{Context, Result};

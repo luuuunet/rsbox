@@ -1,4 +1,4 @@
-//! sing-box binary rule-set (`.srs`) reader.
+//! Binary rule-set (`.srs`) reader.
 
 use anyhow::{bail, Context, Result};
 use flate2::read::ZlibDecoder;
@@ -22,7 +22,7 @@ pub struct SrsCompiled {
 
 pub fn parse_srs(data: &[u8]) -> Result<SrsCompiled> {
     if data.len() < 5 || data[..3] != MAGIC {
-        bail!("invalid sing-box rule-set file");
+        bail!("invalid binary rule-set file");
     }
     let _version = data[3];
     let mut decoder = ZlibDecoder::new(Cursor::new(&data[4..]));

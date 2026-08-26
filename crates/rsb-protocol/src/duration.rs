@@ -1,6 +1,6 @@
 use std::time::Duration;
 
-/// Parse sing-box duration strings like `30s`, `5m`, `1h`.
+/// Parse duration strings like `30s`, `5m`, `1h`.
 pub fn parse_duration_str(s: &str) -> Option<Duration> {
     let s = s.trim();
     if let Some(secs) = s.strip_suffix('s') {

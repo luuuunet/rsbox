@@ -1,4 +1,4 @@
-//! sing-box endpoints (wireguard, tailscale).
+//! Endpoint types (wireguard, tailscale) — unused in slim build.
 
 use anyhow::{Context, Result};
 use serde_json::Value;
