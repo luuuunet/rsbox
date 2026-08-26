@@ -10,11 +10,11 @@
 |----------|-----------|--------|
 | **RSQ** | QUIC + TLS 1.3 | Native rsbox protocol — see [docs/rsq-protocol.md](docs/rsq-protocol.md) |
 | **RST** | QUIC + TLS 1.3 | Native rsbox protocol (HTTP/3 auth plane) |
-| **Hysteria2** | QUIC + TLS 1.3 | sing-box–compatible Hy2 client/server |
+| **Hysteria2** | QUIC + TLS 1.3 | Standard Hy2 client/server |
 
-Local control uses sing-box–style JSON: `mixed` inbound, `direct` / `selector` / `urltest` routing, optional `tun`.
+Local control uses JSON config: `mixed` inbound, `direct` / `selector` / `urltest` routing, optional `tun`.
 
-> Independent project. Not affiliated with sing-box / SagerNet.
+> Independent rsbox project.
 
 ## Features
 

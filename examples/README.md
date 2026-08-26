@@ -1,6 +1,6 @@
 # Configuration examples
 
-Sample JSON configs for **rsbox**. Field names follow the sing-box–compatible style.
+Sample JSON configs for **rsbox**.
 
 For ciphers and protocol details see **[docs/PROTOCOLS.md](../docs/PROTOCOLS.md)**.
 

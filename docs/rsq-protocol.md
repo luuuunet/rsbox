@@ -1,6 +1,6 @@
 # RSQ Protocol v1
 
-rsbox-only QUIC proxy protocol. **Not compatible** with Hysteria2 or sing-box.
+rsbox-only QUIC proxy protocol. **Not compatible** with Hysteria2 or other third-party cores.
 
 ## Goals
 

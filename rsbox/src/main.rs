@@ -9,7 +9,7 @@ use std::path::{Path, PathBuf};
 use tracing_subscriber::EnvFilter;
 
 #[derive(Parser)]
-#[command(name = "rsbox", about = "Rust sing-box compatible proxy platform")]
+#[command(name = "rsbox", about = "rsbox proxy platform (RSQ / RST / Hysteria2)")]
 struct Cli {
     #[command(subcommand)]
     command: Commands,
@@ -103,7 +103,7 @@ async fn main() -> anyhow::Result<()> {
         Commands::Run { config } => run(config).await,
         Commands::Check { config } => check(&config).await,
         Commands::Version => {
-            println!("rsbox {VERSION} (sing-box compatible, Rust)");
+            println!("rsbox {VERSION} (Rust)");
             Ok(())
         },
         Commands::RsqGenCert { output_dir, name } => {

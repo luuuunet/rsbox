@@ -1,4 +1,4 @@
-//! rsbox type constants (sing-box–compatible JSON field names).
+//! rsbox type constants (JSON config field names).
 
 // --- Supported proxy protocols ---
 pub const TYPE_HYSTERIA2: &str = "hysteria2";

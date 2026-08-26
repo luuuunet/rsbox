@@ -234,7 +234,7 @@ pub struct ClashApiOptions {
 
 impl Options {
     pub fn from_json(text: &str) -> Result<Self> {
-        let options: Self = serde_json::from_str(text).context("parse sing-box config json")?;
+        let options: Self = serde_json::from_str(text).context("parse config json")?;
         options.validate()?;
         Ok(options)
     }

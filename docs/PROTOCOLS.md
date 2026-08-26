@@ -2,7 +2,7 @@
 
 rsbox ships **three proxy protocols** plus local routing infrastructure.
 
-Legacy sing-box types (Shadowsocks, VMess, VLESS, Trojan, TUIC, WireGuard, …) are **not registered** and will fail config validation.
+Legacy proxy types (Shadowsocks, VMess, VLESS, Trojan, TUIC, WireGuard, …) are **not registered** and will fail config validation.
 
 ---
 
@@ -55,7 +55,7 @@ Wire details: [rsq-protocol.md](rsq-protocol.md).
 
 ### RST client outbound (example)
 
-Same shape as RSQ/Hy2 sing-box JSON; see `examples/rst-local.json` if present in your tree.
+Same JSON field layout as common proxy configs; see `examples/rst-local.json` if present in your tree.
 
 ---
 
@@ -113,7 +113,7 @@ These JSON `"type"` values are **not supported**:
 
 `shadowsocks`, `vmess`, `vless`, `trojan`, `tuic`, `anytls`, `shadowtls`, `naive`, `hysteria`, `wireguard`, `ssh`, `tor`, `chain`, `socks`/`http` as **outbound**, `tailscale`, `redirect`, `tproxy`, …
 
-If you need one of these, use upstream sing-box instead.
+If you need removed protocol types, use another proxy core.
 
 ---
 
