@@ -121,15 +121,14 @@ fn test_protocol_constants() {
 
     // 验证所有协议类型都定义了
     assert!(ALL_INBOUND_TYPES.contains(&TYPE_MIXED));
-    assert!(ALL_INBOUND_TYPES.contains(&TYPE_HTTP));
-    assert!(ALL_INBOUND_TYPES.contains(&TYPE_SOCKS));
-    assert!(ALL_INBOUND_TYPES.contains(&TYPE_SHADOWSOCKS));
-    assert!(ALL_INBOUND_TYPES.contains(&TYPE_VMESS));
-    assert!(ALL_INBOUND_TYPES.contains(&TYPE_VLESS));
-    assert!(ALL_INBOUND_TYPES.contains(&TYPE_TROJAN));
+    assert!(ALL_INBOUND_TYPES.contains(&TYPE_RSQ));
+    assert!(ALL_INBOUND_TYPES.contains(&TYPE_RST));
+    assert!(ALL_INBOUND_TYPES.contains(&TYPE_HYSTERIA2));
+    assert!(!ALL_INBOUND_TYPES.contains(&TYPE_SHADOWSOCKS));
 
     assert!(ALL_OUTBOUND_TYPES.contains(&TYPE_DIRECT));
     assert!(ALL_OUTBOUND_TYPES.contains(&TYPE_BLOCK));
     assert!(ALL_OUTBOUND_TYPES.contains(&TYPE_SELECTOR));
     assert!(ALL_OUTBOUND_TYPES.contains(&TYPE_URLTEST));
+    assert!(ALL_OUTBOUND_TYPES.contains(&TYPE_RSQ));
 }

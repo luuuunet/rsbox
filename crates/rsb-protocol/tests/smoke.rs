@@ -9,7 +9,8 @@ fn registry_covers_declared_types() {
     assert!(ALL_INBOUND_TYPES.iter().all(|t| is_known_inbound(t)));
     assert!(ALL_OUTBOUND_TYPES.iter().all(|t| is_known_outbound(t)));
     assert!(is_known_service("api"));
-    assert!(is_known_outbound("wireguard"));
+    assert!(is_known_outbound("rsq"));
+    assert!(!is_known_outbound("wireguard"));
 }
 
 #[test]

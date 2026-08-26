@@ -296,13 +296,7 @@ impl Options {
 
     /// UDP tunnel endpoints that must remain reachable when blocking browser QUIC (UDP/443).
     pub fn udp_tunnel_endpoints(&self) -> Vec<(String, u16)> {
-        const UDP_KINDS: &[&str] = &[
-            c::TYPE_RSQ,
-            c::TYPE_HYSTERIA,
-            c::TYPE_HYSTERIA2,
-            c::TYPE_TUIC,
-            c::TYPE_WIREGUARD,
-        ];
+        const UDP_KINDS: &[&str] = &[c::TYPE_RSQ, c::TYPE_RST, c::TYPE_HYSTERIA2];
         let mut out = Vec::new();
         for ob in &self.outbounds {
             if !UDP_KINDS.iter().any(|k| ob.kind.eq_ignore_ascii_case(k)) {
