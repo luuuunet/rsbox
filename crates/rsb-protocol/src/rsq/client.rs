@@ -19,12 +19,12 @@ fn next_udp_session_id() -> u32 {
     if id == 0 { 1 } else { id }
 }
 
-const DEFAULT_IDLE_TIMEOUT: Duration = Duration::from_secs(30);
-const DEFAULT_KEEP_ALIVE: Duration = Duration::from_secs(10);
-/// 僵尸会话要尽快发现；过长会导致 mixed CONNECT 全超时 + CLOSE_WAIT。
-const DEFAULT_PROBE_INTERVAL: Duration = Duration::from_secs(3);
-const PROBE_STREAM_TIMEOUT: Duration = Duration::from_secs(1);
-const DEFAULT_STREAM_OPEN_TIMEOUT: Duration = Duration::from_secs(3);
+const DEFAULT_IDLE_TIMEOUT: Duration = Duration::from_secs(180);
+const DEFAULT_KEEP_ALIVE: Duration = Duration::from_secs(25);
+/// 跨境抖动路径上 3s 过勤，易误杀会话；配置可再覆盖。
+const DEFAULT_PROBE_INTERVAL: Duration = Duration::from_secs(15);
+const PROBE_STREAM_TIMEOUT: Duration = Duration::from_secs(3);
+const DEFAULT_STREAM_OPEN_TIMEOUT: Duration = Duration::from_secs(8);
 const DEFAULT_MAX_SESSION_AGE: Duration = Duration::from_secs(30 * 60);
 const TCP_OPEN_REPLY_TIMEOUT: Duration = Duration::from_secs(2);
 const AUTH_IO_TIMEOUT: Duration = Duration::from_secs(3);
@@ -263,12 +263,16 @@ impl RsqOutbound {
             return;
         }
 
+        let inner = Arc::clone(&self.inner);
         let shared = Arc::clone(&self.inner.shared);
         let tag = self.inner.tag.clone();
         let probe_interval = self.inner.probe_interval;
         let max_session_age = self.inner.max_session_age;
 
         tokio::spawn(async move {
+            let ob = RsqOutbound {
+                inner: Arc::clone(&inner),
+            };
             let mut consecutive_probe_fails = 0u32;
             loop {
                 tokio::time::sleep(probe_interval).await;
@@ -294,29 +298,58 @@ impl RsqOutbound {
                     continue;
                 };
 
-                if probe_connection(&conn).await {
-                    consecutive_probe_fails = 0;
-                    continue;
-                }
-
-                consecutive_probe_fails = consecutive_probe_fails.saturating_add(1);
-                tracing::warn!(
-                    tag = %tag,
-                    conn_id,
-                    generation,
-                    consecutive_probe_fails,
-                    "rsq: probe open_bi failed"
-                );
-                // 一次确认失败即可重置：等两次太慢，mixed 早已假死。
-                if consecutive_probe_fails >= 1 {
-                    tracing::warn!(
-                        tag = %tag,
-                        conn_id,
-                        generation,
-                        "rsq: resetting zombie session after probe failure"
-                    );
-                    reset_session(&shared, "probe failed").await;
-                    consecutive_probe_fails = 0;
+                match probe_connection_detailed(&conn).await {
+                    ProbeResult::Ok => {
+                        consecutive_probe_fails = 0;
+                        continue;
+                    }
+                    // open_bi 超时：会话多半已僵死，立刻重置并重建（源头自愈，不等客户端重连）。
+                    ProbeResult::Timeout => {
+                        tracing::warn!(
+                            tag = %tag,
+                            conn_id,
+                            generation,
+                            "rsq: probe open_bi timeout — resetting and rewarming session"
+                        );
+                        reset_session(&shared, "probe timeout").await;
+                        consecutive_probe_fails = 0;
+                        if let Err(err) = ob.establish_session().await {
+                            tracing::warn!(
+                                tag = %tag,
+                                error = %err,
+                                "rsq: rewarm after probe timeout failed"
+                            );
+                        }
+                        continue;
+                    }
+                    ProbeResult::Failed => {
+                        consecutive_probe_fails = consecutive_probe_fails.saturating_add(1);
+                        tracing::warn!(
+                            tag = %tag,
+                            conn_id,
+                            generation,
+                            consecutive_probe_fails,
+                            "rsq: probe open_bi failed"
+                        );
+                        // 连续两次失败再重置，避免单次跨境丢包误杀。
+                        if consecutive_probe_fails >= 2 {
+                            tracing::warn!(
+                                tag = %tag,
+                                conn_id,
+                                generation,
+                                "rsq: resetting zombie session after probe failure and rewarming"
+                            );
+                            reset_session(&shared, "probe failed").await;
+                            consecutive_probe_fails = 0;
+                            if let Err(err) = ob.establish_session().await {
+                                tracing::warn!(
+                                    tag = %tag,
+                                    error = %err,
+                                    "rsq: rewarm after probe failure failed"
+                                );
+                            }
+                        }
+                    }
                 }
             }
         });
@@ -631,9 +664,15 @@ impl Outbound for RsqOutbound {
     }
 }
 
-async fn probe_connection(conn: &quinn::Connection) -> bool {
+enum ProbeResult {
+    Ok,
+    Failed,
+    Timeout,
+}
+
+async fn probe_connection_detailed(conn: &quinn::Connection) -> ProbeResult {
     if conn.close_reason().is_some() {
-        return false;
+        return ProbeResult::Failed;
     }
 
     match tokio::time::timeout(PROBE_STREAM_TIMEOUT, conn.open_bi()).await {
@@ -641,17 +680,21 @@ async fn probe_connection(conn: &quinn::Connection) -> bool {
             let _ = send.reset(0u32.into());
             drop(recv);
             drop(send);
-            true
+            ProbeResult::Ok
         }
         Ok(Err(e)) => {
             tracing::debug!(error = %e, "rsq: probe open_bi failed");
-            false
+            ProbeResult::Failed
         }
         Err(_) => {
             tracing::debug!("rsq: probe open_bi timeout");
-            false
+            ProbeResult::Timeout
         }
     }
+}
+
+async fn probe_connection(conn: &quinn::Connection) -> bool {
+    matches!(probe_connection_detailed(conn).await, ProbeResult::Ok)
 }
 
 async fn reset_session(shared: &RsqShared, reason: &str) {

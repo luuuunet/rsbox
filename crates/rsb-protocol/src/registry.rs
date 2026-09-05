@@ -4,7 +4,9 @@ use crate::build_context::BuildContext;
 use crate::group::OutboundController;
 #[cfg(any(feature = "desktop", feature = "mobile"))]
 use crate::tun_mode;
-use crate::{direct, dns_inbound, dns_outbound, group, hysteria2, inbound_proxy, rsq, rst};
+use crate::{
+    direct, dns_inbound, dns_outbound, fallback, group, hysteria2, inbound_proxy, rsq, rst,
+};
 use anyhow::{bail, Result};
 use rsb_config::{Inbound, Outbound};
 use rsb_core::{Dialer, SharedOutboundManager};
@@ -58,6 +60,11 @@ pub fn build_outbound(
             let ut = group::UrlTestOutbound::new(tag, ob.raw.clone(), shared.clone())?;
             controller.register_urltest(ut.control());
             Box::new(ut)
+        }
+        TYPE_FALLBACK => {
+            let fb = fallback::FallbackOutbound::new(tag, ob.raw.clone(), shared.clone())?;
+            controller.register_fallback(fb.control());
+            Box::new(fb)
         }
         other => bail!("unknown outbound type: {other}"),
     })
@@ -122,6 +129,7 @@ mod tests {
         assert!(is_known_outbound("rsq"));
         assert!(is_known_outbound("rst"));
         assert!(is_known_outbound("hysteria2"));
+        assert!(is_known_outbound("fallback"));
         assert!(is_known_inbound("mixed"));
         assert!(is_known_inbound("rsq"));
         assert!(!is_known_inbound("shadowsocks"));

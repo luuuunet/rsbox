@@ -15,6 +15,7 @@ pub const TYPE_HTTP: &str = "http";
 pub const TYPE_MIXED: &str = "mixed";
 pub const TYPE_SELECTOR: &str = "selector";
 pub const TYPE_URLTEST: &str = "urltest";
+pub const TYPE_FALLBACK: &str = "fallback";
 
 // --- Removed from the public build (legacy source may still reference these) ---
 pub const TYPE_REDIRECT: &str = "redirect";
@@ -66,6 +67,7 @@ pub const ALL_OUTBOUND_TYPES: &[&str] = &[
     TYPE_DNS,
     TYPE_SELECTOR,
     TYPE_URLTEST,
+    TYPE_FALLBACK,
     TYPE_HYSTERIA2,
     TYPE_RSQ,
     TYPE_RST,

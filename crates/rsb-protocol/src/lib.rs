@@ -9,6 +9,7 @@ pub mod dns_outbound;
 pub mod duration;
 pub mod endpoints;
 pub mod engine;
+pub mod fallback;
 pub mod reload;
 pub mod group;
 pub mod http_outbound;

@@ -46,6 +46,7 @@ impl SelectorControl {
 pub struct OutboundController {
     selectors: parking_lot::RwLock<std::collections::HashMap<String, SelectorControl>>,
     urltests: parking_lot::RwLock<std::collections::HashMap<String, UrlTestControl>>,
+    fallbacks: parking_lot::RwLock<std::collections::HashMap<String, crate::fallback::FallbackControl>>,
     shared: Arc<SharedOutboundManager>,
 }
 
@@ -54,6 +55,7 @@ impl OutboundController {
         Self {
             selectors: parking_lot::RwLock::new(std::collections::HashMap::new()),
             urltests: parking_lot::RwLock::new(std::collections::HashMap::new()),
+            fallbacks: parking_lot::RwLock::new(std::collections::HashMap::new()),
             shared,
         }
     }
@@ -70,6 +72,12 @@ impl OutboundController {
             .insert(control.tag().to_string(), control);
     }
 
+    pub fn register_fallback(&self, control: crate::fallback::FallbackControl) {
+        self.fallbacks
+            .write()
+            .insert(control.tag().to_string(), control);
+    }
+
     pub fn select(&self, selector_tag: &str, child: &str) -> Result<()> {
         self.selectors
             .read()
@@ -82,7 +90,10 @@ impl OutboundController {
         if let Some(s) = self.selectors.read().get(group_tag) {
             return Some(s.selected());
         }
-        self.urltests.read().get(group_tag).map(|u| u.selected())
+        if let Some(u) = self.urltests.read().get(group_tag) {
+            return Some(u.selected());
+        }
+        self.fallbacks.read().get(group_tag).map(|f| f.selected())
     }
 
     /// Run latency probe for a urltest/selector group; returns (selected_tag, delays).
@@ -115,6 +126,22 @@ impl OutboundController {
         for control in self.selectors.read().values() {
             let mut entry = serde_json::Map::new();
             entry.insert("type".into(), "Selector".into());
+            entry.insert("now".into(), control.selected().into());
+            entry.insert(
+                "all".into(),
+                serde_json::Value::Array(
+                    control
+                        .outbounds()
+                        .iter()
+                        .map(|s| serde_json::Value::String(s.clone()))
+                        .collect(),
+                ),
+            );
+            proxies.insert(control.tag().to_string(), serde_json::Value::Object(entry));
+        }
+        for control in self.fallbacks.read().values() {
+            let mut entry = serde_json::Map::new();
+            entry.insert("type".into(), "Fallback".into());
             entry.insert("now".into(), control.selected().into());
             entry.insert(
                 "all".into(),
