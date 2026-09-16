@@ -21,8 +21,9 @@ fn next_udp_session_id() -> u32 {
 
 const DEFAULT_IDLE_TIMEOUT: Duration = Duration::from_secs(180);
 const DEFAULT_KEEP_ALIVE: Duration = Duration::from_secs(25);
-/// 跨境抖动路径上 3s 过勤，易误杀会话；配置可再覆盖。
-const DEFAULT_PROBE_INTERVAL: Duration = Duration::from_secs(15);
+/// 跨境抖动：默认 12s 巡检；过勤易在丢包路径上误重置。
+const DEFAULT_PROBE_INTERVAL: Duration = Duration::from_secs(12);
+/// open_bi 探针超时。
 const PROBE_STREAM_TIMEOUT: Duration = Duration::from_secs(3);
 const DEFAULT_STREAM_OPEN_TIMEOUT: Duration = Duration::from_secs(8);
 const DEFAULT_MAX_SESSION_AGE: Duration = Duration::from_secs(30 * 60);
@@ -303,7 +304,7 @@ impl RsqOutbound {
                         consecutive_probe_fails = 0;
                         continue;
                     }
-                    // open_bi 超时：会话多半已僵死，立刻重置并重建（源头自愈，不等客户端重连）。
+                    // open_bi 超时：会话多半僵死，重置并重建。
                     ProbeResult::Timeout => {
                         tracing::warn!(
                             tag = %tag,
@@ -496,6 +497,10 @@ impl RsqOutbound {
         }
     }
 
+    fn generation_still_current(&self, session_generation: u32) -> bool {
+        self.inner.shared.generation.load(Ordering::Relaxed) == session_generation
+    }
+
     async fn dial_tcp_inner(
         &self,
         destination: SocketAddr,
@@ -514,10 +519,20 @@ impl RsqOutbound {
         };
 
         let session = self.get_connection().await?;
+        let session_generation = session.generation;
+        if !self.generation_still_current(session_generation) {
+            return Err(anyhow::anyhow!("rsq: session generation expired").into());
+        }
+
         let (mut send, mut recv) = self
             .open_bi_with_timeout(&session.connection)
             .await
             .context("open rsq stream")?;
+
+        if !self.generation_still_current(session_generation) {
+            let _ = send.reset(0u32.into());
+            return Err(anyhow::anyhow!("rsq: session generation expired").into());
+        }
 
         // Prefer a concrete IPv4/IPv6 from client DnsRouter (detour-clean). Only fall back
         // to remote hostname resolve when the dial address is still unspecified.
@@ -535,6 +550,9 @@ impl RsqOutbound {
         let mut buf = BytesMut::new();
         let mut chunk = [0u8; 512];
         loop {
+            if !self.generation_still_current(session_generation) {
+                return Err(anyhow::anyhow!("rsq: session generation expired").into());
+            }
             if let Some(reply) = protocol::try_decode_tcp_reply(&mut buf)? {
                 match reply {
                     protocol::TcpOpenReply::Ok => break,
@@ -558,6 +576,10 @@ impl RsqOutbound {
             }
         }
 
+        if !self.generation_still_current(session_generation) {
+            return Err(anyhow::anyhow!("rsq: session generation expired").into());
+        }
+
         let prefix = buf.to_vec();
         let reader: Box<dyn AsyncRead + Send + Unpin> = if prefix.is_empty() {
             Box::new(recv)
@@ -565,6 +587,7 @@ impl RsqOutbound {
             Box::new(stream::PrefixedRecvStream::new(recv, prefix))
         };
         // 默认直写（对齐 Hy2）；仅 use_brutal 时套 BrutalWriter。
+        // Quinn connection.close（session reset）会使流读写尽快失败，从而结束 relay。
         if self.inner.use_brutal {
             let pacer = bandwidth::brutal_pacer_from_mbps(self.inner.up_mbps);
             let writer = bandwidth::BrutalWriter::new(send, pacer);
@@ -670,6 +693,7 @@ enum ProbeResult {
     Timeout,
 }
 
+/// 会话探针：仅 open_bi。tcp_open 数据面探针曾在跨境丢包时误重置所有节点，已撤回。
 async fn probe_connection_detailed(conn: &quinn::Connection) -> ProbeResult {
     if conn.close_reason().is_some() {
         return ProbeResult::Failed;
@@ -693,6 +717,7 @@ async fn probe_connection_detailed(conn: &quinn::Connection) -> ProbeResult {
     }
 }
 
+#[allow(dead_code)]
 async fn probe_connection(conn: &quinn::Connection) -> bool {
     matches!(probe_connection_detailed(conn).await, ProbeResult::Ok)
 }
@@ -714,6 +739,7 @@ fn should_fail_fast_without_retry(err: &BoxError) -> bool {
     msg.contains("dial queue timeout")
         || msg.contains("wait for session connect timed out")
         || msg.contains("outbound dial concurrency saturated")
+        || msg.contains("session generation expired")
 }
 
 fn should_reset_rsq_session(err: &BoxError) -> bool {

@@ -24,9 +24,9 @@ const INBOUND_DRAIN_TIMEOUT: std::time::Duration = std::time::Duration::from_mil
 /// Absolute ceiling for one relay; idle/EOF should finish much sooner.
 const RELAY_TOTAL_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(600);
 /// 双向空闲拆隧道。过长会让已 FIN 的入站卡在 CLOSE_WAIT。
-const RELAY_IDLE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(15);
+const RELAY_IDLE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(8);
 /// 写半死远端必须更快失败，否则卡在 write 时读不到客户端 FIN → CLOSE_WAIT。
-const RELAY_WRITE_IDLE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(5);
+const RELAY_WRITE_IDLE_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(3);
 const OUTBOUND_DIAL_TIMEOUT: std::time::Duration = std::time::Duration::from_secs(3);
 const PROXY_DIAL_ACQUIRE_TIMEOUT: std::time::Duration = std::time::Duration::from_millis(800);
 /// DNS via RST may need a stream open; keep above dial work budget but short.
@@ -50,12 +50,25 @@ fn try_acquire_active(counter: &Arc<AtomicUsize>) -> Option<ActiveConnGuard> {
     loop {
         let cur = counter.load(Ordering::Relaxed);
         if cur >= MAX_ACTIVE_CONNECTIONS {
+            tracing::warn!(
+                active = cur,
+                cap = MAX_ACTIVE_CONNECTIONS,
+                "inbound active connections at cap — new accepts RST"
+            );
             return None;
         }
         if counter
             .compare_exchange(cur, cur + 1, Ordering::AcqRel, Ordering::Relaxed)
             .is_ok()
         {
+            // 接近上限时偶发提示，便于现场确认 CLOSE_WAIT/假死堆积。
+            if cur + 1 >= (MAX_ACTIVE_CONNECTIONS * 9) / 10 && (cur + 1) % 32 == 0 {
+                tracing::warn!(
+                    active = cur + 1,
+                    cap = MAX_ACTIVE_CONNECTIONS,
+                    "inbound active connections near cap"
+                );
+            }
             return Some(ActiveConnGuard {
                 counter: Arc::clone(counter),
             });
@@ -89,6 +102,28 @@ mod async_cleanup {
                 while let Some(request) = rx.recv().await {
                     match request {
                         CleanupRequest::TcpStream(mut stream) => {
+                            // Windows：linger=0，避免 cleanup 路径留下 CLOSE_WAIT。
+                            #[cfg(windows)]
+                            {
+                                use std::os::windows::io::AsRawSocket;
+                                let raw = stream.as_raw_socket();
+                                unsafe {
+                                    let mut linger =
+                                        windows_sys::Win32::Networking::WinSock::LINGER {
+                                            l_onoff: 1,
+                                            l_linger: 0,
+                                        };
+                                    windows_sys::Win32::Networking::WinSock::setsockopt(
+                                        raw as usize,
+                                        windows_sys::Win32::Networking::WinSock::SOL_SOCKET,
+                                        windows_sys::Win32::Networking::WinSock::SO_LINGER,
+                                        &linger as *const _ as *const u8,
+                                        std::mem::size_of::<
+                                            windows_sys::Win32::Networking::WinSock::LINGER,
+                                        >() as i32,
+                                    );
+                                }
+                            }
                             match stream.shutdown().await {
                                 Ok(_) => {
                                     count += 1;
